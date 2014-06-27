@@ -33,7 +33,7 @@ namespace Drbg_Test
         // results file name
         private const string RESULTS_NAME = "results.txt";
         // number of random sample pairs to test
-        private const int TEST_ITERATIONS = 100;
+        private const int TEST_ITERATIONS = 1000;
         // size of random chunks (10 kib)
         private const int CHUNK_SIZE = 10240;
         // size of random sample (1 mib)
@@ -126,13 +126,26 @@ namespace Drbg_Test
             int montePiWon = 0;
             int serCorWon = 0;
             ApiTypes api = ApiTypes.A;
+            EntResult res1;
+            EntResult res2;
 
             for (int i = 0; i < Iterations; i++)
             {
                 Ent ent1 = new Ent();
                 Ent ent2 = new Ent();
-                EntResult res1 = ent1.Calculate(GetRandom2(SAMPLE_SIZE));
-                EntResult res2 = ent2.Calculate(GetRNGRandom(SAMPLE_SIZE));
+
+                if (rdRotating.Checked)
+                    res1 = ent1.Calculate(GetRandomRotating(SAMPLE_SIZE));
+                else if (rdOscillating.Checked)
+                    res1 = ent1.Calculate(GetRandomOscillating(SAMPLE_SIZE));
+                else
+                    res1 = ent1.Calculate(GetRandomAutoSeed(SAMPLE_SIZE));
+
+                if (rdAes800.Checked)
+                    res2 = ent2.Calculate(GetAes800Drbg(SAMPLE_SIZE));
+                else
+                    res2 = ent2.Calculate(GetRNGRandom(SAMPLE_SIZE));
+
                 ApiTypes bestPerc = EntCompare(res1, res2, TestTypes.Entropy);
 
                 if (bestPerc == ApiTypes.A)
@@ -297,17 +310,59 @@ namespace Drbg_Test
 
         #region Algorithms
         /// <summary>
-        /// Get random using seed and key entropy
+        /// Get random using auto seeding
         /// </summary>
-        private byte[] GetRandom(int Size)
+        private byte[] GetAes800Drbg(int Size)
+        {
+            byte[] output = new byte[Size];
+            Aes800Drbg ctr;
+
+            for (int i = 0; i < Size; i += CHUNK_SIZE)
+            {
+                byte[] data = new byte[CHUNK_SIZE];
+                byte[] seed = GetSeed();
+
+                ctr = new Aes800Drbg(GetSeed384());
+                ctr.Generate(data);
+
+                Buffer.BlockCopy(data, 0, output, i, CHUNK_SIZE);
+            }
+
+            return output;
+        }
+
+        /// <summary>
+        /// Get random using auto seeding
+        /// </summary>
+        private byte[] GetRandomAutoSeed(int Size)
         {
             byte[] output = new byte[Size];
 
             for (int i = 0; i < Size; i += CHUNK_SIZE)
             {
                 byte[] data = new byte[CHUNK_SIZE];
-                byte[] seed = GetSeed();
+
+                using (AesCtr ctr = new AesCtr())
+                    data = ctr.Generate(CHUNK_SIZE);
+
+                Buffer.BlockCopy(data, 0, output, i, CHUNK_SIZE);
+            }
+
+            return output;
+        }
+
+        /// <summary>
+        /// Get random using seed and key entropy
+        /// </summary>
+        private byte[] GetRandomOscillating(int Size)
+        {
+            byte[] output = new byte[Size];
+
+            for (int i = 0; i < Size; i += CHUNK_SIZE)
+            {
+                byte[] data = new byte[CHUNK_SIZE];
                 byte[] key = GetKey();
+                byte[] seed = GetSeed();
 
                 using (AesCtr ctr = new AesCtr())
                     data = ctr.Generate(seed, key, CHUNK_SIZE);
@@ -321,7 +376,7 @@ namespace Drbg_Test
         /// <summary>
         /// Get random using seed
         /// </summary>
-        private byte[] GetRandom2(int Size)
+        private byte[] GetRandomRotating(int Size)
         {
             byte[] output = new byte[Size];
 
@@ -339,29 +394,10 @@ namespace Drbg_Test
             return output;
         }
 
-        /// <summary>
-        /// Get random using auto seeding
-        /// </summary>
-        private byte[] GetRandom3(int Size)
-        {
-            byte[] output = new byte[Size];
-
-            for (int i = 0; i < Size; i += CHUNK_SIZE)
-            {
-                byte[] data = new byte[CHUNK_SIZE];
-
-                using (AesCtr ctr = new AesCtr())
-                    data = ctr.Generate(CHUNK_SIZE);
-
-                Buffer.BlockCopy(data, 0, output, i, CHUNK_SIZE);
-            }
-
-            return output;
-        }
-
         private byte[] GetRNGRandom(int Size)
         {
             byte[] output = new byte[Size];
+
             using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
                 random.GetBytes(output);
 
@@ -372,40 +408,48 @@ namespace Drbg_Test
         #region Helpers
         private void Append(string Data, string Path)
         {
-            using (StreamWriter st = File.AppendText(Path))
-                st.WriteLine(Data);
+            using (StreamWriter writer = File.AppendText(Path))
+                writer.WriteLine(Data);
         }
 
         private void Write(byte[] Data, string Path)
         {
-            using (BinaryWriter br = new BinaryWriter(File.Open(Path, FileMode.Create)))
-                br.Write(Data);
+            using (BinaryWriter writer = new BinaryWriter(File.Open(Path, FileMode.Create)))
+                writer.Write(Data);
         }
 
-        private bool Equal(byte[] b1, byte[] b2)
+        private bool Equal(byte[] Data1, byte[] Data2)
         {
-            return b1.SequenceEqual(b2);
+            return Data1.SequenceEqual(Data2);
         }
 
         private byte[] GetSeed()
         {
-            using (RNGCryptoServiceProvider rand = new RNGCryptoServiceProvider())
+            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
             {
                 byte[] data = new byte[128];
                 byte[] data2 = new byte[128];
-                byte[] ret = new byte[64];
+                byte[] result = new byte[64];
 
-                rand.GetBytes(data);
-                rand.GetBytes(data2);
+                random.GetBytes(data);
+                random.GetBytes(data2);
 
                 // entropy extractor
                 using (SHA256 shaHash = SHA256Managed.Create())
                 {
-                    Buffer.BlockCopy(shaHash.ComputeHash(data), 0, ret, 0, 32);
-                    Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, ret, 32, 32);
-                    return ret;
+                    Buffer.BlockCopy(shaHash.ComputeHash(data), 0, result, 0, 32);
+                    Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, result, 32, 32);
+                    return result;
                 }
             }
+        }
+
+        private byte[] GetSeed384()
+        {
+            byte[] data = new byte[48];
+            Buffer.BlockCopy(GetKey(), 0, data, 0, 32);
+            Buffer.BlockCopy(GetKey(), 0, data, 32, 16);
+            return data;
         }
 
         private byte[] GetKey()
@@ -421,5 +465,13 @@ namespace Drbg_Test
             }
         }
         #endregion
+
+        private void OnCheckChanged(object sender, EventArgs e)
+        {
+            if (File.Exists(txtOutput.Text))
+                File.Delete(txtOutput.Text);
+            if (Directory.Exists(Path.GetDirectoryName(txtOutput.Text)))
+                btnTestAesCtr.Enabled = true;
+        }
     }
 }

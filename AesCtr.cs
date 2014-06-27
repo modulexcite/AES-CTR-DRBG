@@ -130,23 +130,21 @@ namespace Drbg_Test
             byte[] outputBlock = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[Size];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] tempBuffer = new byte[KEY_BYTES];
             byte[] iv = new byte[IV_BYTES];
             int counter = 0;
 
             // copy the seed to buffer, key, keycounter, and iv
             Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
-            Buffer.BlockCopy(Seed, KEY_BYTES, keyCounter, 0, KEY_BYTES);
             Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES, keyCounter, 0, KEY_BYTES);
 
             // xor the keycounter and key
             for (int j = 0; j < KEY_BYTES; j++)
                 keyCounter[j] ^= key[j];
 
-            // hash via sha256
+            // get hash via sha256
             keyCounter = Extractor(keyCounter);
-
             // expand key
             expandedKey = ExpandKey(key);
 
@@ -345,12 +343,6 @@ namespace Drbg_Test
             result |= (UInt32)SBox[value] << 16;
             value = 0xff & (Rot >> 24);
             return result | (UInt32)(SBox[value] << 24);
-        }
-
-        private void Xor(byte[] Output, byte[] Data1, byte[] Data2, int Data2Offset)
-        {
-            for (int i = 0; i < Output.Length; i++)
-                Output[i] = (byte)(Data1[i] ^ Data2[i + Data2Offset]);
         }
         #endregion
 
