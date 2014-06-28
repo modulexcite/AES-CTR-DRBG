@@ -1,6 +1,15 @@
 ﻿using System;
 using System.Security.Cryptography;
 
+/// An AES-CTR-DRBG implementation..
+/// AES routines based on several implementations including Mono: https://github.com/mono, and BouncyCastle: http://bouncycastle.org/
+/// Many thanks to the authors of those great projects, and the authors of the Novell implementation.. j.u.
+
+/// Further revisions will be maintained on GitHub: https://github.com/Steppenwolfe65/AES-CTR-DRBG
+/// Licence is free for all use, provided the user accepts that the author, (John Underhill), offers no support for this software, and 
+/// disavows any and all liability or responsibility in it's use or distributions thereof, now and for all time.
+/// This header must remain in any distributions/derivations of this class.
+
 namespace Drbg_Test
 {
     internal class AesCtr : IDisposable
@@ -10,6 +19,7 @@ namespace Drbg_Test
         private const Int32 EXPANDED_KEYSIZE = 60;
         private const Int32 KEY_BITS = 256;
         private const Int32 KEY_BYTES = 32;
+        private const Int32 SEED_BYTES = 64;
         private const Int32 IV_BITS = 128;
         private const Int32 IV_BYTES = 16;
         private const Int32 NB = 4;
@@ -18,33 +28,7 @@ namespace Drbg_Test
         #endregion
 
         #region Fields
-        private bool _Disposed = false;
-        #endregion
-
-        #region Properties
-        /// <summary>
-        /// Unit block size of internal cipher in bytes
-        /// </summary>
-        public int BlockSize
-        {
-            get { return BLOCK_SIZE; }
-        }
-
-        /// <summary>
-        /// Encryption Key Size, fixed at 32 bytes
-        /// </summary>
-        public Int32 KeySize
-        {
-            get { return KEY_BYTES; }
-        }
-
-        /// <summary>
-        /// Initialization Vector Size, fixed at 16 bytes
-        /// </summary>
-        public int IVSize
-        {
-            get { return IV_BYTES; }
-        }
+        private bool _isDisposed = false;
         #endregion
 
         #region Constructor
@@ -58,21 +42,32 @@ namespace Drbg_Test
         }
         #endregion
 
-        #region Public Methods
+        #region Properties
         /// <summary>
-        /// Generate a block of random bytes
+        /// Seed size
         /// </summary>
-        /// <param name="Size">Size of data to return in bytes. Truncated to divisible of 16</param>
+        public int SeedSize
+        {
+            get { return SEED_BYTES; }
+        }
+        #endregion
+
+        #region Byte Array Generators
+        /// <summary>
+        /// Generate a block of random bytes, auto reseeds every 10Kib
+        /// </summary>
+        /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Data [byte[]]</returns>
         public byte[] Generate(int Size)
         {
-            // falls on block size
+            int actualSize = Size;
+            // adjust to upper divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
-
+            int lastBlock = Size - BLOCK_SIZE;
             UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] key = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[Size];
+            byte[] outputData = new byte[actualSize];
             byte[] seedBuffer = new byte[IV_BYTES];
             byte[] tempBuffer = new byte[KEY_BYTES];
             byte[] iv = new byte[IV_BYTES];
@@ -83,12 +78,12 @@ namespace Drbg_Test
                 // re-seed every 10 kib
                 if (i % 10240 == 0)
                 {
-                    seedMaterial = GetSeed();
+                    seedMaterial = GetSeed64();
                     // copy the seed to buffer, key and iv
                     Buffer.BlockCopy(seedMaterial, 0, key, 0, KEY_BYTES);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES, iv, 0, BLOCK_SIZE);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-                    expandedKey = ExpandKey(GetKey());
+                    expandedKey = ExpandKey(GetSeed32());
                 }
 
                 // increment buffer
@@ -100,35 +95,49 @@ namespace Drbg_Test
 
                 // encrypt iv (aes: data, output, key)
                 TransformBlock(iv, outputBlock, expandedKey);
-                // copy transform to output
-                Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
-                // copy transform to iv
-                Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
 
-                // re-key every 1 kib
-                if (i % 1024 == 0)
-                    expandedKey = ExpandKey(GetKey());
+                if (i != lastBlock)
+                {
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
+
+                    // re-key every 1 kib
+                    if (i % 1024 == 0)
+                        expandedKey = ExpandKey(GetSeed32());
+                }
+                else
+                {
+                    // copy last block
+                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
             }
 
             return outputData;
         }
 
         /// <summary>
-        /// Generate a block of random bytes
+        /// Generate a block of random bytes using a rotating key scheme
         /// </summary>
         /// <param name="Seed">Random seed, Fixed size: must be 512 bits/64 bytes</param>
-        /// <param name="Size">Size of data to return in bytes. Truncated to divisible of 16</param>
+        /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Random data [byte[]]</returns>
         public byte[] Generate(byte[] Seed, int Size)
         {
-            // falls on block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            if (Seed.Length != 64)
+                throw new Exception("Seed size must be 64 bytes long!");
 
+            int actualSize = Size;
+            // adjust to divisble of block size
+            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            int lastBlock = Size - BLOCK_SIZE;
             UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] key = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[Size];
+            byte[] outputData = new byte[actualSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] iv = new byte[IV_BYTES];
             int counter = 0;
@@ -159,50 +168,65 @@ namespace Drbg_Test
 
                 // encrypt iv (aes: data, output, key)
                 TransformBlock(iv, outputBlock, expandedKey);
-                // copy transform to output
-                Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
-                // copy transform to iv
-                Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
 
-                // increment key counter every 2 blocks
-                if (counter % 2 == 1)
-                    Increment(keyCounter);
-
-                // rotating key -experimental.. re-key every 1 kib
-                if (i % 1024 == 0)
+                if (i != lastBlock)
                 {
-                    // xor key with keycounter
-                    for (int j = 0; j < KEY_BYTES; j++)
-                        key[j] ^= keyCounter[j];
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
 
-                    // new key
-                    key = Extractor(key);
-                    expandedKey = ExpandKey(key);
+                    // increment key counter every 2 blocks
+                    if (counter % 2 == 1)
+                        Increment(keyCounter);
+
+                    // rotating key -experimental.. re-key every 1 kib
+                    if (i % 1024 == 0)
+                    {
+                        // xor key with keycounter
+                        for (int j = 0; j < KEY_BYTES; j++)
+                            key[j] ^= keyCounter[j];
+
+                        // extract key from sha256
+                        key = Extractor(key);
+                        expandedKey = ExpandKey(key);
+                    }
+                    counter++;
                 }
-                counter++;
+                else
+                {
+                    // copy last block
+                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
+
             }
 
             return outputData;
         }
 
         /// <summary>
-        /// Generate a block of random bytes, uses a rotating key scheme
+        /// Generate a block of random bytes, uses an oscillating key scheme
         /// </summary>
         /// <param name="Seed">Random seed, Fixed size: must be 512 bits/64 bytes</param>
         /// <param name="Entropy">Random key entropy for rotation, Must be 256 bits/32 bytes</param>
-        /// <param name="Size">Size of data to return in bytes. Truncated to divisible of 16</param>
+        /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Random data [byte[]]</returns>
-        public byte[] Generate(byte[] Seed, byte[] Entropy, int Size)
+        public byte[] GenerateOsc(byte[] Seed, int Size)
         {
-            // falls on block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            if (Seed.Length != 64)
+                throw new Exception("Seed size must be 64 bytes long!");
 
+            int actualSize = Size;
+            // adjust to divisble of block size
+            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            int lastBlock = Size - BLOCK_SIZE;
             UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
             UInt32[] expandedKey2 = new UInt32[EXPANDED_KEYSIZE];
             byte[] key = new byte[KEY_BYTES];
             byte[] key2 = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[Size];
+            byte[] outputData = new byte[actualSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] tempBuffer = new byte[KEY_BYTES];
             byte[] iv = new byte[IV_BYTES];
@@ -212,7 +236,14 @@ namespace Drbg_Test
             Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
             Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-            Buffer.BlockCopy(Entropy, 0, key2, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, key2, 0, KEY_BYTES);
+
+            // xor key2 and key
+            for (int j = 0; j < KEY_BYTES; j++)
+                key2[j] ^= key[j];
+
+            // get hash via sha256
+            key2 = Extractor(key2);
 
             // expand keys
             expandedKey = ExpandKey(key);
@@ -233,14 +264,254 @@ namespace Drbg_Test
                 else
                     TransformBlock(iv, outputBlock, expandedKey2);
 
-                // copy transform to output
-                Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
-                // copy transform to iv
-                Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
-                counter++;
+                if (i != lastBlock)
+                {
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
+                    counter++;
+                }
+                else
+                {
+                    // copy last block
+                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
             }
 
             return outputData;
+        }
+        #endregion
+
+        #region Random Output Methods
+        /// <summary>
+        /// Get an array of random bytes
+        /// </summary>
+        /// <param name="OutputData">Initialized array that receives the random bytes</param>
+        public void GetBytes(byte[] OutputData)
+        {
+            if (OutputData == null)
+                throw new Exception("Output array can not be null!");
+            if (OutputData.Length < 1)
+                throw new Exception("Output array must be at least 1 byte in length!");
+
+            byte[] data = Generate(OutputData.Length);
+            Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+        }
+
+        /// <summary>
+        /// Get an array of random chars
+        /// </summary>
+        /// <param name="OutputData">Initialized array that receives the random chars</param>
+        public void GetChars(char[] OutputData)
+        {
+            if (OutputData == null)
+                throw new Exception("Output array can not be null!");
+            if (OutputData.Length < 1)
+                throw new Exception("Output array must be at least 1 char in length!");
+
+            byte[] data = Generate(OutputData.Length * 2);
+            Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+        }
+
+        /// <summary>
+        /// Get an array of random Int16s
+        /// </summary>
+        /// <param name="OutputData">Initialized array that receives the random Int16s</param>
+        public void GetInt16s(Int16[] OutputData)
+        {
+            if (OutputData == null)
+                throw new Exception("Output array can not be null!");
+            if (OutputData.Length < 1)
+                throw new Exception("Output array must be at least 1 in length!");
+
+            byte[] data = Generate(OutputData.Length * 2);
+            Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+        }
+
+        /// <summary>
+        /// Get an array of random Int32s
+        /// </summary>
+        /// <param name="OutputData">Initialized array that receives the random Int32s</param>
+        public void GetInt32s(Int32[] OutputData)
+        {
+            if (OutputData == null)
+                throw new Exception("Output array can not be null!");
+            if (OutputData.Length < 1)
+                throw new Exception("Output array must be at least 1 in length!");
+
+            byte[] data = Generate(OutputData.Length * 4);
+            Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+        }
+
+        /// <summary>
+        /// Get an array of random Int64s
+        /// </summary>
+        /// <param name="OutputData">Initialized array that receives the random Int64s</param>
+        public void GetInt64s(Int64[] OutputData)
+        {
+            if (OutputData == null)
+                throw new Exception("Output array can not be null!");
+            if (OutputData.Length < 1)
+                throw new Exception("Output array must be at least 1 in length!");
+
+            byte[] data = Generate(OutputData.Length * 8);
+            Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+        }
+
+        /// <summary>
+        /// Get a random double
+        /// </summary>
+        /// <returns>Random double</returns>
+        public double NextDouble()
+        {
+            double[] num = new double[1];
+            byte[] buffer = GetSeed16();
+            Buffer.BlockCopy(buffer, 0, num, 0, 8);
+            return num[0];
+        }
+
+        /// <summary>
+        /// Get a random float
+        /// </summary>
+        /// <returns>Random double</returns>
+        public double NextFloat()
+        {
+            float[] num = new float[1];
+            byte[] buffer = GetSeed16();
+            Buffer.BlockCopy(buffer, 0, num, 0, 4);
+            return num[0];
+        }
+
+        /// <summary>
+        /// Get a random short integer
+        /// </summary>
+        /// <returns>Random Int16</returns>
+        public Int16 NextInt16()
+        {
+            return BitConverter.ToInt16(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned short integer
+        /// </summary>
+        /// <returns>Random Int16</returns>
+        public UInt16 NextUInt16()
+        {
+            return BitConverter.ToUInt16(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random 32bit integer
+        /// </summary>
+        /// <returns>Random Int32</returns>
+        public Int32 NextInt32()
+        {
+            return BitConverter.ToInt32(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned 32bit integer
+        /// </summary>
+        /// <returns>Random UInt32</returns>
+        public UInt32 NextUInt32()
+        {
+            return BitConverter.ToUInt32(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random long integer
+        /// </summary>
+        /// <returns>Random Int64</returns>
+        public Int64 NextInt64()
+        {
+            return BitConverter.ToInt64(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned long integer
+        /// </summary>
+        /// <returns>Random UInt64</returns>
+        public UInt64 NextUInt64()
+        {
+            return BitConverter.ToUInt64(GetSeed16(), 0);
+        }
+        #endregion
+
+        #region Seed Generators
+        /// <summary>
+        /// Get a 64 byte/512 bit seed
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed64()
+        {
+            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
+            {
+                byte[] data = new byte[128];
+                byte[] data2 = new byte[128];
+                byte[] seed = new byte[64];
+
+                random.GetBytes(data);
+                random.GetBytes(data2);
+
+                // entropy extractor
+                using (SHA256 shaHash = SHA256Managed.Create())
+                {
+                    Buffer.BlockCopy(shaHash.ComputeHash(data), 0, seed, 0, 32);
+                    Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, seed, 32, 32);
+                    return seed;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get a 32 byte/256 bit seed
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed32()
+        {
+            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
+            {
+                byte[] data = new byte[128];
+                random.GetBytes(data);
+
+                // entropy extractor
+                using (SHA256 shaHash = SHA256Managed.Create())
+                    return shaHash.ComputeHash(data);
+            }
+        }
+
+        /// <summary>
+        /// Get a 16 byte/128 bit seed
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed16()
+        {
+            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
+            {
+                byte[] data = new byte[128];
+                byte[] result = new byte[16];
+                byte[] result2 = new byte[16];
+                byte[] hash = new byte[32];
+
+                random.GetBytes(data);
+
+                // entropy extractor
+                using (SHA256 shaHash = SHA256Managed.Create())
+                {
+                    hash = shaHash.ComputeHash(data);
+
+                    Buffer.BlockCopy(hash, 0, result, 0, 16);
+                    Buffer.BlockCopy(hash, 16, result2, 0, 16);
+
+                    // xor the halves
+                    for (int j = 0; j < 16; j++)
+                        result[j] ^= result2[j];
+
+                    return result;
+                }
+            }
         }
         #endregion
 
@@ -288,40 +559,6 @@ namespace Drbg_Test
                 return shaHash.ComputeHash(Data);
         }
 
-        private byte[] GetSeed()
-        {
-            using (RNGCryptoServiceProvider rand = new RNGCryptoServiceProvider())
-            {
-                byte[] data = new byte[128];
-                byte[] data2 = new byte[128];
-                byte[] seed = new byte[64];
-
-                rand.GetBytes(data);
-                rand.GetBytes(data2);
-
-                // entropy extractor
-                using (SHA256 shaHash = SHA256Managed.Create())
-                {
-                    Buffer.BlockCopy(shaHash.ComputeHash(data), 0, seed, 0, 32);
-                    Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, seed, 32, 32);
-                    return seed;
-                }
-            }
-        }
-
-        private byte[] GetKey()
-        {
-            using (RNGCryptoServiceProvider rand = new RNGCryptoServiceProvider())
-            {
-                byte[] data = new byte[128];
-                rand.GetBytes(data);
-
-                // entropy extractor
-                using (SHA256 shaHash = SHA256Managed.Create())
-                    return shaHash.ComputeHash(data);
-            }
-        }
-
         private void Increment(byte[] Data)
         {
             int carry = 1;
@@ -346,7 +583,7 @@ namespace Drbg_Test
         }
         #endregion
 
-        #region Encrypt
+        #region AES Transform
         private void TransformBlock(byte[] InData, byte[] OutData, UInt32[] Key)
         {
             UInt32 a0, a1, a2, a3, b0, b1, b2, b3;
@@ -357,55 +594,46 @@ namespace Drbg_Test
             a1 = (((UInt32)InData[4] << 24) | ((UInt32)InData[5] << 16) | ((UInt32)InData[6] << 8) | (UInt32)InData[7]) ^ Key[1];
             a2 = (((UInt32)InData[8] << 24) | ((UInt32)InData[9] << 16) | ((UInt32)InData[10] << 8) | (UInt32)InData[11]) ^ Key[2];
             a3 = (((UInt32)InData[12] << 24) | ((UInt32)InData[13] << 16) | ((UInt32)InData[14] << 8) | (UInt32)InData[15]) ^ Key[3];
-
             // Round 1
             b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[4];
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[5];
             b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[6];
             b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[7];
-
             // Round 2
             a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[8];
             a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[9];
             a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[10];
             a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[11];
-
             // Round 3
             b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[12];
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[13];
             b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[14];
             b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[15];
-
             // Round 4
             a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[16];
             a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[17];
             a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[18];
             a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[19];
-
             // Round 5
             b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[20];
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[21];
             b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[22];
             b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[23];
-
             // Round 6
             a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[24];
             a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[25];
             a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[26];
             a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[27];
-
             // Round 7
             b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[28];
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[29];
             b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[30];
             b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[31];
-
             // Round 8
             a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[32];
             a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[33];
             a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[34];
             a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[35];
-
             // Round 9
             b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[36];
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[37];
@@ -419,7 +647,6 @@ namespace Drbg_Test
                 a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[41];
                 a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[42];
                 a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[43];
-
                 // Round 11
                 b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[44];
                 b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[45];
@@ -435,7 +662,6 @@ namespace Drbg_Test
                     a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[49];
                     a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[50];
                     a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[51];
-
                     // Round 13
                     b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[52];
                     b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[53];
@@ -451,17 +677,14 @@ namespace Drbg_Test
             OutData[1] = (byte)(SBox[(byte)(b1 >> 16)] ^ (byte)(Key[ei] >> 16));
             OutData[2] = (byte)(SBox[(byte)(b2 >> 8)] ^ (byte)(Key[ei] >> 8));
             OutData[3] = (byte)(SBox[(byte)b3] ^ (byte)Key[ei++]);
-
             OutData[4] = (byte)(SBox[b1 >> 24] ^ (byte)(Key[ei] >> 24));
             OutData[5] = (byte)(SBox[(byte)(b2 >> 16)] ^ (byte)(Key[ei] >> 16));
             OutData[6] = (byte)(SBox[(byte)(b3 >> 8)] ^ (byte)(Key[ei] >> 8));
             OutData[7] = (byte)(SBox[(byte)b0] ^ (byte)Key[ei++]);
-
             OutData[8] = (byte)(SBox[b2 >> 24] ^ (byte)(Key[ei] >> 24));
             OutData[9] = (byte)(SBox[(byte)(b3 >> 16)] ^ (byte)(Key[ei] >> 16));
             OutData[10] = (byte)(SBox[(byte)(b0 >> 8)] ^ (byte)(Key[ei] >> 8));
             OutData[11] = (byte)(SBox[(byte)b1] ^ (byte)Key[ei++]);
-
             OutData[12] = (byte)(SBox[b3 >> 24] ^ (byte)(Key[ei] >> 24));
             OutData[13] = (byte)(SBox[(byte)(b0 >> 16)] ^ (byte)(Key[ei] >> 16));
             OutData[14] = (byte)(SBox[(byte)(b1 >> 8)] ^ (byte)(Key[ei] >> 8));
@@ -470,14 +693,14 @@ namespace Drbg_Test
         #endregion
 
         #region Constant Table
-        private static readonly UInt32[] Rcon = new UInt32[] {
+        private readonly UInt32[] Rcon = new UInt32[] {
 			0x00000000, 0x01000000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000,
 			0x80000000, 0x1b000000, 0x36000000, 0x6c000000, 0xd8000000, 0xab000000, 0x4d000000, 0x9a000000,
 			0x2f000000, 0x5e000000, 0xbc000000, 0x63000000, 0xc6000000, 0x97000000, 0x35000000, 0x6a000000,
 			0xd4000000, 0xb3000000, 0x7d000000, 0xfa000000, 0xef000000, 0xc5000000
 		};
 
-        private static readonly byte[] SBox = new byte[] {
+        private readonly byte[] SBox = new byte[] {
 			0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
 			0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
 			0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
@@ -496,7 +719,7 @@ namespace Drbg_Test
 			0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
 		};
 
-        private static readonly byte[] iSBox = {
+        private readonly byte[] iSBox = {
 			0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
 			0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
 			0x54, 0x7b, 0x94, 0x32, 0xa6, 0xc2, 0x23, 0x3d, 0xee, 0x4c, 0x95, 0x0b, 0x42, 0xfa, 0xc3, 0x4e,
@@ -515,7 +738,7 @@ namespace Drbg_Test
 			0x17, 0x2b, 0x04, 0x7e, 0xba, 0x77, 0xd6, 0x26, 0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d,
 		};
 
-        private static readonly UInt32[] T0 = {
+        private readonly UInt32[] T0 = {
 			0xc66363a5, 0xf87c7c84, 0xee777799, 0xf67b7b8d, 0xfff2f20d, 0xd66b6bbd, 0xde6f6fb1, 0x91c5c554,
 			0x60303050, 0x02010103, 0xce6767a9, 0x562b2b7d, 0xe7fefe19, 0xb5d7d762, 0x4dababe6, 0xec76769a,
 			0x8fcaca45, 0x1f82829d, 0x89c9c940, 0xfa7d7d87, 0xeffafa15, 0xb25959eb, 0x8e4747c9, 0xfbf0f00b,
@@ -549,8 +772,8 @@ namespace Drbg_Test
 			0x038c8c8f, 0x59a1a1f8, 0x09898980, 0x1a0d0d17, 0x65bfbfda, 0xd7e6e631, 0x844242c6, 0xd06868b8,
 			0x824141c3, 0x299999b0, 0x5a2d2d77, 0x1e0f0f11, 0x7bb0b0cb, 0xa85454fc, 0x6dbbbbd6, 0x2c16163a,
 		};
-
-        private static readonly UInt32[] T1 = {
+        
+        private readonly UInt32[] T1 = {
 			0xa5c66363, 0x84f87c7c, 0x99ee7777, 0x8df67b7b, 0x0dfff2f2, 0xbdd66b6b, 0xb1de6f6f, 0x5491c5c5,
 			0x50603030, 0x03020101, 0xa9ce6767, 0x7d562b2b, 0x19e7fefe, 0x62b5d7d7, 0xe64dabab, 0x9aec7676,
 			0x458fcaca, 0x9d1f8282, 0x4089c9c9, 0x87fa7d7d, 0x15effafa, 0xebb25959, 0xc98e4747, 0x0bfbf0f0,
@@ -585,7 +808,7 @@ namespace Drbg_Test
 			0xc3824141, 0xb0299999, 0x775a2d2d, 0x111e0f0f, 0xcb7bb0b0, 0xfca85454, 0xd66dbbbb, 0x3a2c1616,
 		};
 
-        private static readonly UInt32[] T2 = {
+        private readonly UInt32[] T2 = {
 			0x63a5c663, 0x7c84f87c, 0x7799ee77, 0x7b8df67b, 0xf20dfff2, 0x6bbdd66b, 0x6fb1de6f, 0xc55491c5,
 			0x30506030, 0x01030201, 0x67a9ce67, 0x2b7d562b, 0xfe19e7fe, 0xd762b5d7, 0xabe64dab, 0x769aec76,
 			0xca458fca, 0x829d1f82, 0xc94089c9, 0x7d87fa7d, 0xfa15effa, 0x59ebb259, 0x47c98e47, 0xf00bfbf0,
@@ -619,8 +842,8 @@ namespace Drbg_Test
 			0x8c8f038c, 0xa1f859a1, 0x89800989, 0x0d171a0d, 0xbfda65bf, 0xe631d7e6, 0x42c68442, 0x68b8d068,
 			0x41c38241, 0x99b02999, 0x2d775a2d, 0x0f111e0f, 0xb0cb7bb0, 0x54fca854, 0xbbd66dbb, 0x163a2c16,
 		};
-
-        private static readonly UInt32[] T3 = {
+        
+        private readonly UInt32[] T3 = {
 			0x6363a5c6, 0x7c7c84f8, 0x777799ee, 0x7b7b8df6, 0xf2f20dff, 0x6b6bbdd6, 0x6f6fb1de, 0xc5c55491,
 			0x30305060, 0x01010302, 0x6767a9ce, 0x2b2b7d56, 0xfefe19e7, 0xd7d762b5, 0xababe64d, 0x76769aec,
 			0xcaca458f, 0x82829d1f, 0xc9c94089, 0x7d7d87fa, 0xfafa15ef, 0x5959ebb2, 0x4747c98e, 0xf0f00bfb,
@@ -655,7 +878,7 @@ namespace Drbg_Test
 			0x4141c382, 0x9999b029, 0x2d2d775a, 0x0f0f111e, 0xb0b0cb7b, 0x5454fca8, 0xbbbbd66d, 0x16163a2c,
 		};
 
-        private static readonly UInt32[] iT0 = {
+        private readonly UInt32[] iT0 = {
 			0x51f4a750, 0x7e416553, 0x1a17a4c3, 0x3a275e96, 0x3bab6bcb, 0x1f9d45f1, 0xacfa58ab, 0x4be30393,
 			0x2030fa55, 0xad766df6, 0x88cc7691, 0xf5024c25, 0x4fe5d7fc, 0xc52acbd7, 0x26354480, 0xb562a38f,
 			0xdeb15a49, 0x25ba1b67, 0x45ea0e98, 0x5dfec0e1, 0xc32f7502, 0x814cf012, 0x8d4697a3, 0x6bd3f9c6,
@@ -689,8 +912,8 @@ namespace Drbg_Test
 			0xcaaff381, 0xb968c43e, 0x3824342c, 0xc2a3405f, 0x161dc372, 0xbce2250c, 0x283c498b, 0xff0d9541,
 			0x39a80171, 0x080cb3de, 0xd8b4e49c, 0x6456c190, 0x7bcb8461, 0xd532b670, 0x486c5c74, 0xd0b85742,
 		};
-
-        private static readonly UInt32[] iT1 = {
+        
+        private readonly UInt32[] iT1 = {
 			0x5051f4a7, 0x537e4165, 0xc31a17a4, 0x963a275e, 0xcb3bab6b, 0xf11f9d45, 0xabacfa58, 0x934be303,
 			0x552030fa, 0xf6ad766d, 0x9188cc76, 0x25f5024c, 0xfc4fe5d7, 0xd7c52acb, 0x80263544, 0x8fb562a3,
 			0x49deb15a, 0x6725ba1b, 0x9845ea0e, 0xe15dfec0, 0x02c32f75, 0x12814cf0, 0xa38d4697, 0xc66bd3f9,
@@ -725,7 +948,7 @@ namespace Drbg_Test
 			0x7139a801, 0xde080cb3, 0x9cd8b4e4, 0x906456c1, 0x617bcb84, 0x70d532b6, 0x74486c5c, 0x42d0b857,
 		};
 
-        private static readonly UInt32[] iT2 = {
+        private readonly UInt32[] iT2 = {
 			0xa75051f4, 0x65537e41, 0xa4c31a17, 0x5e963a27, 0x6bcb3bab, 0x45f11f9d, 0x58abacfa, 0x03934be3,
 			0xfa552030, 0x6df6ad76, 0x769188cc, 0x4c25f502, 0xd7fc4fe5, 0xcbd7c52a, 0x44802635, 0xa38fb562,
 			0x5a49deb1, 0x1b6725ba, 0x0e9845ea, 0xc0e15dfe, 0x7502c32f, 0xf012814c, 0x97a38d46, 0xf9c66bd3,
@@ -759,8 +982,8 @@ namespace Drbg_Test
 			0xf381caaf, 0xc43eb968, 0x342c3824, 0x405fc2a3, 0xc372161d, 0x250cbce2, 0x498b283c, 0x9541ff0d,
 			0x017139a8, 0xb3de080c, 0xe49cd8b4, 0xc1906456, 0x84617bcb, 0xb670d532, 0x5c74486c, 0x5742d0b8,
 		};
-
-        private static readonly UInt32[] iT3 = {
+        
+        private readonly UInt32[] iT3 = {
 			0xf4a75051, 0x4165537e, 0x17a4c31a, 0x275e963a, 0xab6bcb3b, 0x9d45f11f, 0xfa58abac, 0xe303934b,
 			0x30fa5520, 0x766df6ad, 0xcc769188, 0x024c25f5, 0xe5d7fc4f, 0x2acbd7c5, 0x35448026, 0x62a38fb5,
 			0xb15a49de, 0xba1b6725, 0xea0e9845, 0xfec0e15d, 0x2f7502c3, 0x4cf01281, 0x4697a38d, 0xd3f9c66b,
@@ -808,10 +1031,37 @@ namespace Drbg_Test
             GC.SuppressFinalize(this);
         }
 
-        private void Dispose(bool disposing)
+        private void Dispose(bool Disposing)
         {
-            if (!_Disposed)
-                _Disposed = true;
+            if (!_isDisposed)
+            {
+                if (Disposing)
+                {
+                    if (Rcon != null)
+                        Array.Clear(Rcon, 0, Rcon.Length);
+                    if (SBox != null)
+                        Array.Clear(SBox, 0, SBox.Length);
+                    if (iSBox != null)
+                        Array.Clear(iSBox, 0, iSBox.Length);
+                    if (T0 != null)
+                        Array.Clear(T0, 0, T0.Length);
+                    if (T1 != null)
+                        Array.Clear(T1, 0, T1.Length);
+                    if (T2 != null)
+                        Array.Clear(T2, 0, T2.Length);
+                    if (T3 != null)
+                        Array.Clear(T3, 0, T3.Length);
+                    if (iT0 != null)
+                        Array.Clear(iT0, 0, iT0.Length);
+                    if (iT1 != null)
+                        Array.Clear(iT1, 0, iT1.Length);
+                    if (iT2 != null)
+                        Array.Clear(iT2, 0, iT2.Length);
+                    if (iT3 != null)
+                        Array.Clear(iT3, 0, iT3.Length);
+                }
+                _isDisposed = true;
+            }
         }
         #endregion
     }
