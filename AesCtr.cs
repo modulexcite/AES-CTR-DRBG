@@ -3,7 +3,7 @@ using System.Security.Cryptography;
 
 /// An AES-CTR-DRBG implementation..
 /// AES routines based on several implementations including Mono: https://github.com/mono, and BouncyCastle: http://bouncycastle.org/
-/// Many thanks to the authors of those great projects, and the authors of the Novell implementation.. j.u.
+/// Many thanks to the authors of those great projects, and the authors of the original Novell implementation.. j.u.
 
 /// Further revisions will be maintained on GitHub: https://github.com/Steppenwolfe65/AES-CTR-DRBG
 /// Licence is free for all use, provided the user accepts that the author, (John Underhill), offers no support for this software, and 
@@ -22,13 +22,13 @@ namespace Drbg_Test
         private const Int32 SEED_BYTES = 64;
         private const Int32 IV_BITS = 128;
         private const Int32 IV_BYTES = 16;
-        private const Int32 NB = 4;
         private const Int32 NK = 8;
-        private const Int32 NR = 14;
         #endregion
 
         #region Fields
         private bool _isDisposed = false;
+        private SHA256 _shaHash = SHA256Managed.Create();
+        private RNGCryptoServiceProvider _rngRandom = new RNGCryptoServiceProvider();
         #endregion
 
         #region Constructor
@@ -366,10 +366,7 @@ namespace Drbg_Test
         /// <returns>Random double</returns>
         public double NextDouble()
         {
-            double[] num = new double[1];
-            byte[] buffer = GetSeed16();
-            Buffer.BlockCopy(buffer, 0, num, 0, 8);
-            return num[0];
+            return BitConverter.ToDouble(GetSeed16(), 0);
         }
 
         /// <summary>
@@ -378,10 +375,7 @@ namespace Drbg_Test
         /// <returns>Random double</returns>
         public double NextFloat()
         {
-            float[] num = new float[1];
-            byte[] buffer = GetSeed16();
-            Buffer.BlockCopy(buffer, 0, num, 0, 4);
-            return num[0];
+            return BitConverter.ToSingle(GetSeed16(), 0);
         }
 
         /// <summary>
@@ -446,23 +440,51 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         public byte[] GetSeed64()
         {
-            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
-            {
-                byte[] data = new byte[128];
-                byte[] data2 = new byte[128];
-                byte[] seed = new byte[64];
+            byte[] data = new byte[128];
+            byte[] data2 = new byte[128];
+            byte[] seed = new byte[64];
 
-                random.GetBytes(data);
-                random.GetBytes(data2);
+            _rngRandom.GetBytes(data);
+            _rngRandom.GetBytes(data2);
 
-                // entropy extractor
-                using (SHA256 shaHash = SHA256Managed.Create())
-                {
-                    Buffer.BlockCopy(shaHash.ComputeHash(data), 0, seed, 0, 32);
-                    Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, seed, 32, 32);
-                    return seed;
-                }
-            }
+            // entropy extractor
+            Buffer.BlockCopy(_shaHash.ComputeHash(data), 0, seed, 0, 32);
+            Buffer.BlockCopy(_shaHash.ComputeHash(data2), 0, seed, 32, 32);
+            return seed;
+        }
+
+        /// <summary>
+        /// Get a 64 byte/512 bit seed, extra strength. 
+        /// Double random feed(4x 128) are xor'd, hashed, then stacked
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed64Xs()
+        {
+            byte[] data1 = new byte[128];
+            byte[] data2 = new byte[128];
+            byte[] data3 = new byte[128];
+            byte[] data4 = new byte[128];
+            byte[] seed = new byte[64];
+
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
+            _rngRandom.GetBytes(data3);
+            _rngRandom.GetBytes(data4);
+
+            // xor buffer 1 and 3
+            for (int j = 0; j < 128; j++)
+                data1[j] ^= data3[j];
+
+            // xor buffer 2 and 4
+            for (int j = 0; j < 128; j++)
+                data2[j] ^= data4[j];
+
+            // copy through entropy extractor
+            Buffer.BlockCopy(_shaHash.ComputeHash(data1), 0, seed, 0, 32);
+            Buffer.BlockCopy(_shaHash.ComputeHash(data2), 0, seed, 32, 32);
+
+            return seed;
         }
 
         /// <summary>
@@ -471,15 +493,32 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         public byte[] GetSeed32()
         {
-            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
-            {
-                byte[] data = new byte[128];
-                random.GetBytes(data);
+            byte[] data = new byte[128];
+            _rngRandom.GetBytes(data);
 
-                // entropy extractor
-                using (SHA256 shaHash = SHA256Managed.Create())
-                    return shaHash.ComputeHash(data);
-            }
+            // entropy extractor
+            return _shaHash.ComputeHash(data);
+        }
+
+        /// <summary>
+        /// Get a 32 byte/256 bit seed, extra strength
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed32Xs()
+        {
+            byte[] data1 = new byte[128];
+            byte[] data2 = new byte[128];
+
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
+
+            // xor buffer 1 and 2
+            for (int j = 0; j < 128; j++)
+                data1[j] ^= data2[j];
+
+            // return through entropy extractor
+            return _shaHash.ComputeHash(data1);
         }
 
         /// <summary>
@@ -488,30 +527,55 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         public byte[] GetSeed16()
         {
-            using (RNGCryptoServiceProvider random = new RNGCryptoServiceProvider())
-            {
-                byte[] data = new byte[128];
-                byte[] result = new byte[16];
-                byte[] result2 = new byte[16];
-                byte[] hash = new byte[32];
+            byte[] data = new byte[128];
+            byte[] hash = new byte[32];
+            byte[] result = new byte[16];
+            byte[] result2 = new byte[16];
 
-                random.GetBytes(data);
+            _rngRandom.GetBytes(data);
 
-                // entropy extractor
-                using (SHA256 shaHash = SHA256Managed.Create())
-                {
-                    hash = shaHash.ComputeHash(data);
+            // entropy extractor
+            hash = _shaHash.ComputeHash(data);
+            Buffer.BlockCopy(hash, 0, result, 0, 16);
+            Buffer.BlockCopy(hash, 16, result2, 0, 16);
 
-                    Buffer.BlockCopy(hash, 0, result, 0, 16);
-                    Buffer.BlockCopy(hash, 16, result2, 0, 16);
+            // xor the halves
+            for (int j = 0; j < 16; j++)
+                result[j] ^= result2[j];
 
-                    // xor the halves
-                    for (int j = 0; j < 16; j++)
-                        result[j] ^= result2[j];
+            return result;
+        }
 
-                    return result;
-                }
-            }
+        /// <summary>
+        /// Get a 16 byte/128 bit seed, extra strength
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        public byte[] GetSeed16Xs()
+        {
+            byte[] data1 = new byte[128];
+            byte[] data2 = new byte[128];
+            byte[] hash = new byte[32];
+            byte[] result = new byte[16];
+            byte[] result2 = new byte[16];
+
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
+
+            // xor buffer 1 and 2
+            for (int j = 0; j < 128; j++)
+                data1[j] ^= data2[j];
+
+            // entropy extractor
+            hash = _shaHash.ComputeHash(data1);
+            Buffer.BlockCopy(hash, 0, result, 0, 16);
+            Buffer.BlockCopy(hash, 16, result2, 0, 16);
+
+            // xor the halves
+            for (int j = 0; j < 16; j++)
+                result[j] ^= result2[j];
+
+            return result;
         }
         #endregion
 
@@ -519,7 +583,7 @@ namespace Drbg_Test
         private uint[] ExpandKey(byte[] Key)
         {
             // Setup Expanded Key
-            Int32 exKeySize = NB * (NR + 1);
+            Int32 exKeySize = EXPANDED_KEYSIZE;
             UInt32[] exKey = new UInt32[exKeySize];
             int pos = 0;
 
@@ -542,7 +606,7 @@ namespace Drbg_Test
                     UInt32 rot = (UInt32)((temp << 8) | ((temp >> 24) & 0xff));
                     temp = SubByte(rot) ^ Rcon[i / NK];
                 }
-                else if (NK > 6 && (i % NK) == 4)
+                else if (i % NK == 4)
                 {
                     temp = SubByte(temp);
                 }
@@ -555,8 +619,7 @@ namespace Drbg_Test
         private byte[] Extractor(byte[] Data)
         {
             // entropy extractor
-            using (SHA256 shaHash = SHA256Managed.Create())
-                return shaHash.ComputeHash(Data);
+            return _shaHash.ComputeHash(Data);
         }
 
         private void Increment(byte[] Data)
@@ -587,7 +650,7 @@ namespace Drbg_Test
         private void TransformBlock(byte[] InData, byte[] OutData, UInt32[] Key)
         {
             UInt32 a0, a1, a2, a3, b0, b1, b2, b3;
-            Int32 ei = 40;
+            Int32 ei = 56;
 
             // Round 0
             a0 = (((UInt32)InData[0] << 24) | ((UInt32)InData[1] << 16) | ((UInt32)InData[2] << 8) | (UInt32)InData[3]) ^ Key[0];
@@ -639,38 +702,26 @@ namespace Drbg_Test
             b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[37];
             b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[38];
             b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[39];
-
-            if (NR > 10)
-            {
-                // Round 10
-                a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[40];
-                a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[41];
-                a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[42];
-                a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[43];
-                // Round 11
-                b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[44];
-                b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[45];
-                b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[46];
-                b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[47];
-
-                ei = 48;
-
-                if (NR > 12)
-                {
-                    // Round 12
-                    a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[48];
-                    a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[49];
-                    a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[50];
-                    a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[51];
-                    // Round 13
-                    b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[52];
-                    b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[53];
-                    b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[54];
-                    b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[55];
-
-                    ei = 56;
-                }
-            }
+            // Round 10
+            a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[40];
+            a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[41];
+            a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[42];
+            a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[43];
+            // Round 11
+            b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[44];
+            b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[45];
+            b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[46];
+            b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[47];
+            // Round 12
+            a0 = T0[b0 >> 24] ^ T1[(byte)(b1 >> 16)] ^ T2[(byte)(b2 >> 8)] ^ T3[(byte)b3] ^ Key[48];
+            a1 = T0[b1 >> 24] ^ T1[(byte)(b2 >> 16)] ^ T2[(byte)(b3 >> 8)] ^ T3[(byte)b0] ^ Key[49];
+            a2 = T0[b2 >> 24] ^ T1[(byte)(b3 >> 16)] ^ T2[(byte)(b0 >> 8)] ^ T3[(byte)b1] ^ Key[50];
+            a3 = T0[b3 >> 24] ^ T1[(byte)(b0 >> 16)] ^ T2[(byte)(b1 >> 8)] ^ T3[(byte)b2] ^ Key[51];
+            // Round 13
+            b0 = T0[a0 >> 24] ^ T1[(byte)(a1 >> 16)] ^ T2[(byte)(a2 >> 8)] ^ T3[(byte)a3] ^ Key[52];
+            b1 = T0[a1 >> 24] ^ T1[(byte)(a2 >> 16)] ^ T2[(byte)(a3 >> 8)] ^ T3[(byte)a0] ^ Key[53];
+            b2 = T0[a2 >> 24] ^ T1[(byte)(a3 >> 16)] ^ T2[(byte)(a0 >> 8)] ^ T3[(byte)a1] ^ Key[54];
+            b3 = T0[a3 >> 24] ^ T1[(byte)(a0 >> 16)] ^ T2[(byte)(a1 >> 8)] ^ T3[(byte)a2] ^ Key[55];
 
             // Final Round
             OutData[0] = (byte)(SBox[b0 >> 24] ^ (byte)(Key[ei] >> 24));
@@ -1037,6 +1088,11 @@ namespace Drbg_Test
             {
                 if (Disposing)
                 {
+                    // dispose sha256
+                    _shaHash.Dispose();
+                    // dispose rng
+                    _rngRandom.Dispose();
+                    // clear the boxes
                     if (Rcon != null)
                         Array.Clear(Rcon, 0, Rcon.Length);
                     if (SBox != null)

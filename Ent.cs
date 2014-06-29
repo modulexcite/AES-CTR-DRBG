@@ -1,25 +1,7 @@
 ﻿/// A version of Brett Trotter's C# version of Ent (Thanks Brett!): http://www.codeproject.com/Articles/11672/ENT-A-Pseudorandom-Number-Sequence-Test-Program-C?msg=4671947#xx4671947xx
 /// The original c++ program written by John Walker (Thanks John!): http://www.fourmilab.ch/random/
 /// Rewritten with optimizations for speed..
-/*
-random.org
-C:\Tests\Test OTP>ent random.bin
-Entropy = 7.999827 bits per byte.
-Optimum compression would reduce the size of this 1048648 byte file by 0 percent.
-Chi square distribution for 1048648 samples is 252.09, and randomly would exceed this value 53.97 percent of the times.
-Arithmetic mean value of data bytes is 127.5177 (127.5 = random).
-Monte Carlo value for Pi is 3.141519906 (error 0.00 percent).
-Serial correlation coefficient is -0.001317 (totally uncorrelated = 0.0).
 
-vpad
-C:\Tests\Test OTP>ent vrandom.bin
-Entropy = 7.999826 bits per byte.
-Optimum compression would reduce the size of this 1048610 byte file by 0 percent.
-Chi square distribution for 1048610 samples is 253.25, and randomly would exceed this value 51.91 percent of the times.
-Arithmetic mean value of data bytes is 127.4960 (127.5 = random).
-Monte Carlo value for Pi is 3.144648906 (error 0.10 percent).
-Serial correlation coefficient is 0.000145 (totally uncorrelated = 0.0).
-*/
 using System;
 using System.IO;
 using System.ComponentModel;
@@ -47,46 +29,63 @@ namespace Drbg_Test
     internal delegate void EntCounterDelegate(long percent);
     #endregion
 
-    internal class Ent
+    internal class Ent : IDisposable
     {
         #region Event
         internal event EntCounterDelegate ProgressCounter;
         #endregion
 
-        #region Fields
-        private double[,] chsqt = new double[2, 10] 
+        #region Constants
+        private const int BIN_BUFFER = 32768;
+        private const int MONTE_COUNT = 6;	
+        private const int SUB_SAMPLES = 64;
+        private const int SAMPLE_SIZE = 4096;
+        #endregion
+
+        #region Fields 
+        private long[] _binCount = new long[256];
+        private static double _currentProgress = 0;
+        private double[] _entProbability = new double[256];
+        private double _inCirc = 0;
+        private bool _isDisposed = false;
+        private double[] _meanSamples = new double[SUB_SAMPLES];
+        private long _monteAccum = 0;
+        private double _montePi = 0;
+        private uint[] _montePiComp = new uint[MONTE_COUNT];
+        private long _monteTries = 0; 
+        private double _monteX = 0;
+        private double _monteY = 0;
+        private double[] _piSamples = new double[SUB_SAMPLES];
+        private long _totalBytes = 0;
+        private double _serialCC = 0;
+        private double _serialLast = 0;
+        private double _serialRun = 0;
+        private double _serialT1 = 0;
+        private double _serialT2 = 0;
+        private double _serialT3 = 0;
+        private double _serialU0 = 0; 
+        private readonly double[,] _chiSqt = new double[2, 10] 
 			{
 				{0.5, 0.25, 0.1, 0.05, 0.025, 0.01, 0.005, 0.001, 0.0005, 0.0001}, 
 				{0.0, 0.6745, 1.2816, 1.6449, 1.9600, 2.3263, 2.5758, 3.0902, 3.2905, 3.7190}
 			};
-        /// Bytes used as Monte Carlo co-ordinates
-		/// This should be no more bits than the mantissa 
-		/// of your "double" floating point type.
-        private static int MONTEN = 6;				
-        private uint[] _MonteCarlo = new uint[MONTEN];
-        /// Probabilities per bin for entropy
-        private double[] _Probability = new double[256];
-        /// Bins to count occurrences of values
-        private long[] _BinCount = new long[256];
-        /// Total bytes counted
-        private long _TotalCount = 0;
-        private static double _currentProgress = 0;
-        private long _InMont, _MCount;
-        private double _InCirc;
-        private double _MonteX, _MonteY, _MontePi;
-        private double SCC, SCCRUN, SCCU0, SCCLAST, SCCT1, SCCT2, SCCT3;
-        private double[] _piSamples = new double[SUBSAMPLES];
-        private double[] _meanSamples = new double[SUBSAMPLES];
-        private const int SUBSAMPLES = 64;
-        private const int SAMPLESIZE = 4096;
-        private const int BINBUFFER = 32768;
         #endregion
 
         #region Constructor
         internal Ent()
         {
+            this.GraphCollection = false;
             Init();
         }
+
+        ~Ent()
+        {
+            Dispose(false);
+        }
+        #endregion
+
+        #region Properties
+        public bool GraphCollection { get; set; }
         #endregion
 
         #region Public Methods
@@ -112,6 +111,30 @@ namespace Drbg_Test
             AddSamples(Buffer);
 
             return EndCalculation();
+        }
+
+        internal void Reset()
+        {
+            _binCount = new long[256];
+            _currentProgress = 0;
+            _entProbability = new double[256];
+            _inCirc = Math.Pow(Math.Pow(256.0, (double)(MONTE_COUNT / 2)) - 1, 2.0);
+            _meanSamples = new double[SUB_SAMPLES];
+            _monteAccum = 0;
+            _montePi = 0;
+            _montePiComp = new uint[MONTE_COUNT];
+            _monteTries = 0; 
+            _monteX = 0;
+            _monteY = 0;
+            _piSamples = new double[SUB_SAMPLES];
+            _totalBytes = 0;
+            _serialCC = 0;
+            _serialLast = 0;
+            _serialRun = 0;
+            _serialT1 = 0;
+            _serialT2 = 0;
+            _serialT3 = 0;
+            _serialU0 = 0; 
         }
         #endregion
 
@@ -142,20 +165,20 @@ namespace Drbg_Test
         private void Init()
         {  						
             // Reset Monte Carlo accumulator pointer
-            _MCount = 0;						
+            _monteAccum = 0;						
             // Clear Monte Carlo tries
-            _InMont = 0;						
+            _monteTries = 0;						
             // Clear Monte Carlo inside count
-            _InCirc = 65535.0 * 65535.0;					
+            _inCirc = 65535.0 * 65535.0;
             // Mark first time for serial correlation
-            SCCT1 = SCCT2 = SCCT3 = 0.0;
+            _serialT1 = _serialT2 = _serialT3 = 0.0;
             // Clear serial correlation terms
-            _InCirc = Math.Pow(Math.Pow(256.0, (double)(MONTEN / 2)) - 1, 2.0);
+            _inCirc = Math.Pow(Math.Pow(256.0, (double)(MONTE_COUNT / 2)) - 1, 2.0);
 
             for (int i = 0; i < 256; i++)
-                _BinCount[i] = 0;
+                _binCount[i] = 0;
 
-            _TotalCount = 0;
+            _totalBytes = 0;
         }
 
         /// <summary>
@@ -167,74 +190,81 @@ namespace Drbg_Test
         {
             int mp = 0;
             bool sccFirst = true;
-            int preProcessLength = (Samples.Length - BINBUFFER) / SAMPLESIZE;
+            int preProcessLength = (Samples.Length - BIN_BUFFER) / SAMPLE_SIZE;
             int counter = 0;
 
-            _piSamples = new double[preProcessLength];
-            _meanSamples = new double[preProcessLength];
+            if (this.GraphCollection)
+            {
+                _piSamples = new double[preProcessLength];
+                _meanSamples = new double[preProcessLength];
+            }
 
             for (int i = 0; i < Samples.Length; i++)
             {
                 // Update counter for this bin
-                _BinCount[(int)Samples[i]]++;
-                _TotalCount++;
+                _binCount[(int)Samples[i]]++;
+                _totalBytes++;
                 // Update inside/outside circle counts for Monte Carlo computation of PI
-                _MonteCarlo[mp++] = Samples[i];
+                _montePiComp[mp++] = Samples[i];
 
                 // Save character for Monte Carlo
-                if (mp >= MONTEN)
+                if (mp >= MONTE_COUNT)
                 {
                     // Calculate every MONTEN character
                     int mj;
                     mp = 0;
-                    _MCount++;
-                    _MonteX = _MonteY = 0;
+                    _monteAccum++;
+                    _monteX = _monteY = 0;
 
-                    for (mj = 0; mj < MONTEN / 2; mj++)
+                    for (mj = 0; mj < MONTE_COUNT / 2; mj++)
                     {
-                        _MonteX = (_MonteX * 256.0) + _MonteCarlo[mj];
-                        _MonteY = (_MonteY * 256.0) + _MonteCarlo[(MONTEN / 2) + mj];
+                        _monteX = (_monteX * 256.0) + _montePiComp[mj];
+                        _monteY = (_monteY * 256.0) + _montePiComp[(MONTE_COUNT / 2) + mj];
                     }
 
-                    if ((_MonteX * _MonteX + _MonteY * _MonteY) <= _InCirc)
-                        _InMont++;
+                    if ((_monteX * _monteX + _monteY * _monteY) <= _inCirc)
+                        _monteTries++;
                 }
 
                 // Update calculation of serial correlation coefficient
-                SCCRUN = (int)Samples[i];
+                _serialRun = (int)Samples[i];
                 if (sccFirst)
                 {
                     sccFirst = false;
-                    SCCLAST = 0;
-                    SCCU0 = SCCRUN;
+                    _serialLast = 0;
+                    _serialU0 = _serialRun;
                 }
                 else
                 {
-                    SCCT1 = SCCT1 + SCCLAST * SCCRUN;
+                    _serialT1 = _serialT1 + _serialLast * _serialRun;
                 }
 
-                SCCT2 = SCCT2 + SCCRUN;
-                SCCT3 = SCCT3 + (SCCRUN * SCCRUN);
-                SCCLAST = SCCRUN;
+                _serialT2 = _serialT2 + _serialRun;
+                _serialT3 = _serialT3 + (_serialRun * _serialRun);
+                _serialLast = _serialRun;
 
                 // collect samples for graphs
-                if (i % SAMPLESIZE == 0 && i > BINBUFFER)
+                if (this.GraphCollection)
                 {
-                    double dataSum = 0.0;
+                    if (i % SAMPLE_SIZE == 0 && i > BIN_BUFFER)
+                    {
+                        double dataSum = 0.0;
 
-                    for (int j = 0; j < 256; j++)
-                        dataSum += ((double)j) * _BinCount[j];
+                        for (int j = 0; j < 256; j++)
+                            dataSum += ((double)j) * _binCount[j];
 
-                    _meanSamples[counter] = dataSum / _TotalCount;
-                    _piSamples[counter] = 4.0 * (((double)_InMont) / _MCount);
-                    counter++;
+                        _meanSamples[counter] = dataSum / _totalBytes;
+                        _piSamples[counter] = 4.0 * (((double)_monteTries) / _monteAccum);
+                        counter++;
+                    }
                 }
+
                 if (i == Samples.Length - 1)
                 {
                     byte[] b = new byte[16];
                     Buffer.BlockCopy(Samples, Samples.Length - 17, b, 0, 16);
                 }
-                CalculateProgress(_TotalCount, Samples.Length);
+                CalculateProgress(_totalBytes, Samples.Length);
             }
         }
 
@@ -251,36 +281,36 @@ namespace Drbg_Test
             int pos = 0;
 
             // Complete calculation of serial correlation coefficient
-            SCCT1 = SCCT1 + SCCLAST * SCCU0;
-            SCCT2 = SCCT2 * SCCT2;
-            SCC = _TotalCount * SCCT3 - SCCT2;
+            _serialT1 = _serialT1 + _serialLast * _serialU0;
+            _serialT2 = _serialT2 * _serialT2;
+            _serialCC = _totalBytes * _serialT3 - _serialT2;
 
-            if (SCC == 0.0)
-                SCC = -100000;
+            if (_serialCC == 0.0)
+                _serialCC = -100000;
             else
-                SCC = (_TotalCount * SCCT1 - SCCT2) / SCC;
+                _serialCC = (_totalBytes * _serialT1 - _serialT2) / _serialCC;
 
             // Scan bins and calculate probability for each bin and Chi-Square distribution
-            double cExp = _TotalCount / 256.0;  
+            double cExp = _totalBytes / 256.0;  
 
             // Expected count per bin
             for (int i = 0; i < 256; i++)
             {
-                _Probability[i] = (double)_BinCount[i] / _TotalCount;
-                binVal = _BinCount[i] - cExp;
+                _entProbability[i] = (double)_binCount[i] / _totalBytes;
+                binVal = _binCount[i] - cExp;
                 chiSq = chiSq + (binVal * binVal) / cExp;
-                dataSum += ((double)i) * _BinCount[i];
+                dataSum += ((double)i) * _binCount[i];
             }
 
             // Calculate entropy
             for (int i = 0; i < 256; i++)
             {
-                if (_Probability[i] > 0.0)
-                    entropy += _Probability[i] * Log2(1 / _Probability[i]);
+                if (_entProbability[i] > 0.0)
+                    entropy += _entProbability[i] * Log2(1 / _entProbability[i]);
             }
 
             // Calculate Monte Carlo value for PI from percentage of hits within the circle
-            _MontePi = 4.0 * (((double)_InMont) / _MCount);
+            _montePi = 4.0 * (((double)_monteTries) / _monteAccum);
 
             // Calculate probability of observed distribution occurring from the results of the Chi-Square test
             double chip = Math.Sqrt(2.0 * chiSq) - Math.Sqrt(2.0 * 255.0 - 1.0);
@@ -289,11 +319,13 @@ namespace Drbg_Test
 
             for (pos = 9; pos >= 0; pos--)
             {
-                if (chsqt[1, pos] < binVal)
+                if (_chiSqt[1, pos] < binVal)
                     break;
             }
 
-            chip = (chip >= 0.0) ? chsqt[0, pos] : 1.0 - chsqt[0, pos];
+            if (pos < 0) pos = 0;
+
+            chip = (chip >= 0.0) ? _chiSqt[0, pos] : 1.0 - _chiSqt[0, pos];
             double compReductionPct = (8 - entropy) / 8.0;
 
             // Return results
@@ -302,14 +334,14 @@ namespace Drbg_Test
                 Entropy = entropy,
                 ChiSquare = chiSq,
                 ChiProbability = chip,
-                Mean = dataSum / _TotalCount,
+                Mean = dataSum / _totalBytes,
                 ExpectedMeanForRandom = 127.5,
-                MonteCarloPiCalc = _MontePi,
-                MonteCarloErrorPct = (Math.Abs(Math.PI - _MontePi) / Math.PI),
-                SerialCorrelation = SCC,
+                MonteCarloPiCalc = _montePi,
+                MonteCarloErrorPct = (Math.Abs(Math.PI - _montePi) / Math.PI),
+                SerialCorrelation = _serialCC,
                 OptimumCompressionReductionPct = compReductionPct,
-                OccuranceCount = this._BinCount,
-                NumberOfSamples = this._TotalCount,
+                OccuranceCount = this._binCount,
+                NumberOfSamples = this._totalBytes,
                 MeanSamples = this._meanSamples,
                 PiSamples = this._piSamples
             };
@@ -323,6 +355,43 @@ namespace Drbg_Test
         private double Log2(double x)
         {
             return Math.Log(x, 2);
+        }
+        #endregion
+
+        #region IDispose
+        public void Dispose()
+        {
+            Dispose(true);
+        }
+
+        void IDisposable.Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        private void Dispose(bool Disposing)
+        {
+            if (!_isDisposed)
+            {
+                if (Disposing)
+                {
+                    // clear the arrays
+                    if (_binCount != null)
+                        Array.Clear(_binCount, 0, _binCount.Length);
+                    if (_entProbability != null)
+                        Array.Clear(_entProbability, 0, _entProbability.Length);
+                    if (_meanSamples != null)
+                        Array.Clear(_meanSamples, 0, _meanSamples.Length);
+                    if (_montePiComp != null)
+                        Array.Clear(_montePiComp, 0, _montePiComp.Length);
+                    if (_piSamples != null)
+                        Array.Clear(_piSamples, 0, _piSamples.Length);
+                    if (_chiSqt != null)
+                        Array.Clear(_chiSqt, 0, _chiSqt.Length);
+                }
+                _isDisposed = true;
+            }
         }
         #endregion
     }
