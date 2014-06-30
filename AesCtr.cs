@@ -19,21 +19,23 @@ namespace Drbg_Test
         private const Int32 EXPANDED_KEYSIZE = 60;
         private const Int32 KEY_BITS = 256;
         private const Int32 KEY_BYTES = 32;
-        private const Int32 SEED_BYTES = 64;
         private const Int32 IV_BITS = 128;
         private const Int32 IV_BYTES = 16;
         private const Int32 NK = 8;
+        private const Int32 REKEY_SIZE = 1024;
+        private const Int32 RESEED_SIZE = 10240;
+        private const Int32 SEED_BYTES = 64;
         #endregion
 
         #region Fields
         private bool _isDisposed = false;
-        private SHA256 _shaHash = SHA256Managed.Create();
-        private RNGCryptoServiceProvider _rngRandom = new RNGCryptoServiceProvider();
         #endregion
 
         #region Constructor
         public AesCtr()
         {
+            ReKeyInterval = REKEY_SIZE;
+            ReSeedInterval = RESEED_SIZE;
         }
 
         ~AesCtr()
@@ -43,6 +45,16 @@ namespace Drbg_Test
         #endregion
 
         #region Properties
+        /// <summary>
+        /// 
+        /// </summary>
+        public int ReKeyInterval { get; set; }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        public int ReSeedInterval { get; set; }
+
         /// <summary>
         /// Seed size
         /// </summary>
@@ -60,14 +72,14 @@ namespace Drbg_Test
         /// <returns>Data [byte[]]</returns>
         public byte[] Generate(int Size)
         {
-            int actualSize = Size;
+            int returnSize = Size;
             // adjust to upper divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             int lastBlock = Size - BLOCK_SIZE;
             UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] key = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[actualSize];
+            byte[] outputData = new byte[returnSize];
             byte[] seedBuffer = new byte[IV_BYTES];
             byte[] tempBuffer = new byte[KEY_BYTES];
             byte[] iv = new byte[IV_BYTES];
@@ -75,15 +87,15 @@ namespace Drbg_Test
 
             for (int i = 0; i < Size; i += BLOCK_SIZE)
             {
-                // re-seed every 10 kib
-                if (i % 10240 == 0)
+                // re-seed (default: 10 kib)
+                if (i % ReSeedInterval == 0)
                 {
-                    seedMaterial = GetSeed64();
+                    seedMaterial = GetSeed64Xs();
                     // copy the seed to buffer, key and iv
                     Buffer.BlockCopy(seedMaterial, 0, key, 0, KEY_BYTES);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES, iv, 0, BLOCK_SIZE);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-                    expandedKey = ExpandKey(GetSeed32());
+                    expandedKey = ExpandKey(GetKey());
                 }
 
                 // increment buffer
@@ -103,14 +115,14 @@ namespace Drbg_Test
                     // copy transform to iv
                     Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
 
-                    // re-key every 1 kib
-                    if (i % 1024 == 0)
-                        expandedKey = ExpandKey(GetSeed32());
+                    // re-key every (default: 1 kib)
+                    if (i % ReKeyInterval == 0)
+                        expandedKey = ExpandKey(GetKey());
                 }
                 else
                 {
                     // copy last block
-                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
@@ -129,7 +141,7 @@ namespace Drbg_Test
             if (Seed.Length != 64)
                 throw new Exception("Seed size must be 64 bytes long!");
 
-            int actualSize = Size;
+            int returnSize = Size;
             // adjust to divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             int lastBlock = Size - BLOCK_SIZE;
@@ -137,7 +149,7 @@ namespace Drbg_Test
             byte[] key = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[actualSize];
+            byte[] outputData = new byte[returnSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] iv = new byte[IV_BYTES];
             int counter = 0;
@@ -152,8 +164,6 @@ namespace Drbg_Test
             for (int j = 0; j < KEY_BYTES; j++)
                 keyCounter[j] ^= key[j];
 
-            // get hash via sha256
-            keyCounter = Extractor(keyCounter);
             // expand key
             expandedKey = ExpandKey(key);
 
@@ -180,15 +190,14 @@ namespace Drbg_Test
                     if (counter % 2 == 1)
                         Increment(keyCounter);
 
-                    // rotating key -experimental.. re-key every 1 kib
-                    if (i % 1024 == 0)
+                    // rotating key -re-key default every 1 kib
+                    if (i % ReKeyInterval == 0)
                     {
                         // xor key with keycounter
                         for (int j = 0; j < KEY_BYTES; j++)
                             key[j] ^= keyCounter[j];
 
-                        // extract key from sha256
-                        key = Extractor(key);
+                        // expand the key
                         expandedKey = ExpandKey(key);
                     }
                     counter++;
@@ -196,7 +205,7 @@ namespace Drbg_Test
                 else
                 {
                     // copy last block
-                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
 
@@ -217,7 +226,7 @@ namespace Drbg_Test
             if (Seed.Length != 64)
                 throw new Exception("Seed size must be 64 bytes long!");
 
-            int actualSize = Size;
+            int returnSize = Size;
             // adjust to divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             int lastBlock = Size - BLOCK_SIZE;
@@ -226,7 +235,7 @@ namespace Drbg_Test
             byte[] key = new byte[KEY_BYTES];
             byte[] key2 = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[actualSize];
+            byte[] outputData = new byte[returnSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] tempBuffer = new byte[KEY_BYTES];
             byte[] iv = new byte[IV_BYTES];
@@ -241,9 +250,6 @@ namespace Drbg_Test
             // xor key2 and key
             for (int j = 0; j < KEY_BYTES; j++)
                 key2[j] ^= key[j];
-
-            // get hash via sha256
-            key2 = Extractor(key2);
 
             // expand keys
             expandedKey = ExpandKey(key);
@@ -275,7 +281,7 @@ namespace Drbg_Test
                 else
                 {
                     // copy last block
-                    int finalSize = (actualSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (actualSize % BLOCK_SIZE);
+                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
@@ -359,106 +365,15 @@ namespace Drbg_Test
             byte[] data = Generate(OutputData.Length * 8);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
         }
-
-        /// <summary>
-        /// Get a random double
-        /// </summary>
-        /// <returns>Random double</returns>
-        public double NextDouble()
-        {
-            return BitConverter.ToDouble(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random float
-        /// </summary>
-        /// <returns>Random double</returns>
-        public double NextFloat()
-        {
-            return BitConverter.ToSingle(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random short integer
-        /// </summary>
-        /// <returns>Random Int16</returns>
-        public Int16 NextInt16()
-        {
-            return BitConverter.ToInt16(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random unsigned short integer
-        /// </summary>
-        /// <returns>Random Int16</returns>
-        public UInt16 NextUInt16()
-        {
-            return BitConverter.ToUInt16(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random 32bit integer
-        /// </summary>
-        /// <returns>Random Int32</returns>
-        public Int32 NextInt32()
-        {
-            return BitConverter.ToInt32(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random unsigned 32bit integer
-        /// </summary>
-        /// <returns>Random UInt32</returns>
-        public UInt32 NextUInt32()
-        {
-            return BitConverter.ToUInt32(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random long integer
-        /// </summary>
-        /// <returns>Random Int64</returns>
-        public Int64 NextInt64()
-        {
-            return BitConverter.ToInt64(GetSeed16(), 0);
-        }
-
-        /// <summary>
-        /// Get a random unsigned long integer
-        /// </summary>
-        /// <returns>Random UInt64</returns>
-        public UInt64 NextUInt64()
-        {
-            return BitConverter.ToUInt64(GetSeed16(), 0);
-        }
         #endregion
 
         #region Seed Generators
-        /// <summary>
-        /// Get a 64 byte/512 bit seed
-        /// </summary>
-        /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed64()
-        {
-            byte[] data = new byte[128];
-            byte[] data2 = new byte[128];
-            byte[] seed = new byte[64];
-
-            _rngRandom.GetBytes(data);
-            _rngRandom.GetBytes(data2);
-
-            // entropy extractor
-            Buffer.BlockCopy(_shaHash.ComputeHash(data), 0, seed, 0, 32);
-            Buffer.BlockCopy(_shaHash.ComputeHash(data2), 0, seed, 32, 32);
-            return seed;
-        }
-
         /// <summary>
         /// Get a 64 byte/512 bit seed, extra strength. 
         /// Double random feed(4x 128) are xor'd, hashed, then stacked
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed64Xs()
+        internal byte[] GetSeed64Xs()
         {
             byte[] data1 = new byte[128];
             byte[] data2 = new byte[128];
@@ -466,116 +381,52 @@ namespace Drbg_Test
             byte[] data4 = new byte[128];
             byte[] seed = new byte[64];
 
-            // get the random seeds
-            _rngRandom.GetBytes(data1);
-            _rngRandom.GetBytes(data2);
-            _rngRandom.GetBytes(data3);
-            _rngRandom.GetBytes(data4);
+            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
+            {
+                // get the random seeds
+                rngRandom.GetBytes(data1);
+                rngRandom.GetBytes(data2);
+                rngRandom.GetBytes(data3);
+                rngRandom.GetBytes(data4);
+
+                using (SHA256 shaHash = SHA256Managed.Create())
+                {
+                    // get the hash values
+                    data1 = shaHash.ComputeHash(data1);
+                    data2 = shaHash.ComputeHash(data2);
+                    data3 = shaHash.ComputeHash(data3);
+                    data4 = shaHash.ComputeHash(data4);
+                }
+            }
 
             // xor buffer 1 and 3
-            for (int j = 0; j < 128; j++)
+            for (int j = 0; j < 32; j++)
                 data1[j] ^= data3[j];
 
             // xor buffer 2 and 4
-            for (int j = 0; j < 128; j++)
+            for (int j = 0; j < 32; j++)
                 data2[j] ^= data4[j];
 
             // copy through entropy extractor
-            Buffer.BlockCopy(_shaHash.ComputeHash(data1), 0, seed, 0, 32);
-            Buffer.BlockCopy(_shaHash.ComputeHash(data2), 0, seed, 32, 32);
+            Buffer.BlockCopy(data1, 0, seed, 0, 32);
+            Buffer.BlockCopy(data2, 0, seed, 32, 32);
 
             return seed;
         }
 
         /// <summary>
-        /// Get a 32 byte/256 bit seed
+        /// Get a 32 byte/256 bit key
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed32()
+        internal byte[] GetKey()
         {
-            byte[] data = new byte[128];
-            _rngRandom.GetBytes(data);
+            byte[] data = GetSeed64Xs();
+            byte[] key = new byte[32];
+
+            Buffer.BlockCopy(data, 0, key, 0, 32);
 
             // entropy extractor
-            return _shaHash.ComputeHash(data);
-        }
-
-        /// <summary>
-        /// Get a 32 byte/256 bit seed, extra strength
-        /// </summary>
-        /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed32Xs()
-        {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
-
-            // get the random seeds
-            _rngRandom.GetBytes(data1);
-            _rngRandom.GetBytes(data2);
-
-            // xor buffer 1 and 2
-            for (int j = 0; j < 128; j++)
-                data1[j] ^= data2[j];
-
-            // return through entropy extractor
-            return _shaHash.ComputeHash(data1);
-        }
-
-        /// <summary>
-        /// Get a 16 byte/128 bit seed
-        /// </summary>
-        /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed16()
-        {
-            byte[] data = new byte[128];
-            byte[] hash = new byte[32];
-            byte[] result = new byte[16];
-            byte[] result2 = new byte[16];
-
-            _rngRandom.GetBytes(data);
-
-            // entropy extractor
-            hash = _shaHash.ComputeHash(data);
-            Buffer.BlockCopy(hash, 0, result, 0, 16);
-            Buffer.BlockCopy(hash, 16, result2, 0, 16);
-
-            // xor the halves
-            for (int j = 0; j < 16; j++)
-                result[j] ^= result2[j];
-
-            return result;
-        }
-
-        /// <summary>
-        /// Get a 16 byte/128 bit seed, extra strength
-        /// </summary>
-        /// <returns>Random seed [byte[]]</returns>
-        public byte[] GetSeed16Xs()
-        {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
-            byte[] hash = new byte[32];
-            byte[] result = new byte[16];
-            byte[] result2 = new byte[16];
-
-            // get the random seeds
-            _rngRandom.GetBytes(data1);
-            _rngRandom.GetBytes(data2);
-
-            // xor buffer 1 and 2
-            for (int j = 0; j < 128; j++)
-                data1[j] ^= data2[j];
-
-            // entropy extractor
-            hash = _shaHash.ComputeHash(data1);
-            Buffer.BlockCopy(hash, 0, result, 0, 16);
-            Buffer.BlockCopy(hash, 16, result2, 0, 16);
-
-            // xor the halves
-            for (int j = 0; j < 16; j++)
-                result[j] ^= result2[j];
-
-            return result;
+            return key;
         }
         #endregion
 
@@ -614,12 +465,6 @@ namespace Drbg_Test
             }
 
             return exKey;
-        }
-
-        private byte[] Extractor(byte[] Data)
-        {
-            // entropy extractor
-            return _shaHash.ComputeHash(Data);
         }
 
         private void Increment(byte[] Data)
@@ -1088,10 +933,6 @@ namespace Drbg_Test
             {
                 if (Disposing)
                 {
-                    // dispose sha256
-                    _shaHash.Dispose();
-                    // dispose rng
-                    _rngRandom.Dispose();
                     // clear the boxes
                     if (Rcon != null)
                         Array.Clear(Rcon, 0, Rcon.Length);
