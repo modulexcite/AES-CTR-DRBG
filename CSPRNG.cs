@@ -89,21 +89,15 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed64()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
+            byte[] data = new byte[256];
             byte[] seed = new byte[64];
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-            {
-                rngRandom.GetBytes(data1);
-                rngRandom.GetBytes(data2);
-            }
 
-            using (SHA256 shaHash = SHA256Managed.Create())
-            {
-                // entropy extractor
-                Buffer.BlockCopy(shaHash.ComputeHash(data1), 0, seed, 0, 32);
-                Buffer.BlockCopy(shaHash.ComputeHash(data2), 0, seed, 32, 32);
-            }
+            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
+                rngRandom.GetBytes(data);
+
+            // entropy extractor
+            using (SHA512 shaHash = SHA512Managed.Create())
+                Buffer.BlockCopy(shaHash.ComputeHash(data), 0, seed, 0, 64);
 
             return seed;
         }

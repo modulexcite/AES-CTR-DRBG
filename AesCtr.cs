@@ -19,16 +19,23 @@ namespace Drbg_Test
         private const Int32 EXPANDED_KEYSIZE = 60;
         private const Int32 KEY_BITS = 256;
         private const Int32 KEY_BYTES = 32;
+        private const Int32 ENGINE_MAXPULL = 10240000;
         private const Int32 IV_BITS = 128;
         private const Int32 IV_BYTES = 16;
         private const Int32 NK = 8;
         private const Int32 REKEY_SIZE = 1024;
+        private const Int32 REKEY_MINSIZE = 128;
+        private const Int32 REKEY_MAXSIZE = 10240000;
         private const Int32 RESEED_SIZE = 10240;
+        private const Int32 RESEED_MINSIZE = 128;
+        private const Int32 RESEED_MAXSIZE = 10240000;
         private const Int32 SEED_BYTES = 64;
         #endregion
 
         #region Fields
         private bool _isDisposed = false;
+        private int _reKeyInterval = REKEY_SIZE;
+        private int _reSeedInterval = RESEED_SIZE;
         #endregion
 
         #region Constructor
@@ -46,17 +53,53 @@ namespace Drbg_Test
 
         #region Properties
         /// <summary>
-        /// 
+        /// Number of bytes between re-keys in auto and rotating key modes
+        /// Must be divisble of key size (32 bytes), 
+        /// Minimum size: 128
+        /// Maximum Size: 10240000
+        /// Default Size: 1024
         /// </summary>
-        public int ReKeyInterval { get; set; }
+        public int ReKeyInterval 
+        {
+            get { return _reKeyInterval; }
+            set 
+            {
+                if (value < REKEY_MINSIZE)
+                    _reKeyInterval = REKEY_MINSIZE;
+                else if (value > REKEY_MAXSIZE)
+                    _reKeyInterval = REKEY_MAXSIZE;
+                if (value % KEY_BYTES > 0)
+                    _reKeyInterval = value - (value % KEY_BYTES);
+                else
+                    _reKeyInterval = value;
+            }
+        }
 
         /// <summary>
-        /// 
+        /// Number of bytes before reseed in auto mode
+        /// Must be divisble of blocksize (16 bytes), 
+        /// Minimum size: 128
+        /// Maximum Size: 10240000
+        /// Default Size: 10240
         /// </summary>
-        public int ReSeedInterval { get; set; }
+        public int ReSeedInterval 
+        {
+            get { return _reSeedInterval; }
+            set
+            {
+                if (value < RESEED_MINSIZE)
+                    _reSeedInterval = RESEED_MINSIZE;
+                else if (value > RESEED_MAXSIZE)
+                    _reSeedInterval = RESEED_MAXSIZE;
+                if (value % BLOCK_SIZE > 0)
+                    _reSeedInterval = value - (value % BLOCK_SIZE);
+                else
+                    _reSeedInterval = value;
+            }
+        }
 
         /// <summary>
-        /// Seed size
+        /// Required Seed buffer size (read only)
         /// </summary>
         public int SeedSize
         {
@@ -66,12 +109,17 @@ namespace Drbg_Test
 
         #region Byte Array Generators
         /// <summary>
-        /// Generate a block of random bytes, auto reseeds every 10Kib
+        /// Generate a block of random bytes, auto Re-Seeds at ReSeedInterval (10Kib by default)
+        /// Re-Keys at ReKeyInterval
         /// </summary>
         /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Data [byte[]]</returns>
         public byte[] Generate(int Size)
         {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
+
             int returnSize = Size;
             // adjust to upper divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
@@ -80,9 +128,9 @@ namespace Drbg_Test
             byte[] key = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[returnSize];
-            byte[] seedBuffer = new byte[IV_BYTES];
+            byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] tempBuffer = new byte[KEY_BYTES];
-            byte[] iv = new byte[IV_BYTES];
+            byte[] iv = new byte[BLOCK_SIZE];
             byte[] seedMaterial = new byte[BLOCK_SIZE];
 
             for (int i = 0; i < Size; i += BLOCK_SIZE)
@@ -138,8 +186,13 @@ namespace Drbg_Test
         /// <returns>Random data [byte[]]</returns>
         public byte[] Generate(byte[] Seed, int Size)
         {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " 
+                    + ENGINE_MAXPULL.ToString() + " bytes.");
+            // wrong seed size!
             if (Seed.Length != 64)
-                throw new Exception("Seed size must be 64 bytes long!");
+                throw new ArgumentOutOfRangeException("Seed size must be 64 bytes long!");
 
             int returnSize = Size;
             // adjust to divisble of block size
@@ -151,7 +204,7 @@ namespace Drbg_Test
             byte[] outputBlock = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[returnSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] iv = new byte[IV_BYTES];
+            byte[] iv = new byte[BLOCK_SIZE];
             int counter = 0;
 
             // copy the seed to buffer, key, keycounter, and iv
@@ -193,6 +246,9 @@ namespace Drbg_Test
                     // rotating key -re-key default every 1 kib
                     if (i % ReKeyInterval == 0)
                     {
+                        // extract counter via sha256
+                        keyCounter = Extract(keyCounter);
+
                         // xor key with keycounter
                         for (int j = 0; j < KEY_BYTES; j++)
                             key[j] ^= keyCounter[j];
@@ -208,9 +264,7 @@ namespace Drbg_Test
                     int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
-
             }
-
             return outputData;
         }
 
@@ -223,6 +277,10 @@ namespace Drbg_Test
         /// <returns>Random data [byte[]]</returns>
         public byte[] GenerateOsc(byte[] Seed, int Size)
         {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
+            // wrong seed size!
             if (Seed.Length != 64)
                 throw new Exception("Seed size must be 64 bytes long!");
 
@@ -238,7 +296,7 @@ namespace Drbg_Test
             byte[] outputData = new byte[returnSize];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] tempBuffer = new byte[KEY_BYTES];
-            byte[] iv = new byte[IV_BYTES];
+            byte[] iv = new byte[BLOCK_SIZE];
             int counter = 0;
 
             // copy the seed to buffer, key and iv
@@ -298,9 +356,11 @@ namespace Drbg_Test
         public void GetBytes(byte[] OutputData)
         {
             if (OutputData == null)
-                throw new Exception("Output array can not be null!");
+                throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
-                throw new Exception("Output array must be at least 1 byte in length!");
+                throw new ArgumentOutOfRangeException("Output array must be at least 1 byte in length!");
+            if (OutputData.Length > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
 
             byte[] data = Generate(OutputData.Length);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
@@ -313,9 +373,11 @@ namespace Drbg_Test
         public void GetChars(char[] OutputData)
         {
             if (OutputData == null)
-                throw new Exception("Output array can not be null!");
+                throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
-                throw new Exception("Output array must be at least 1 char in length!");
+                throw new ArgumentOutOfRangeException("Output array must be at least 1 char in length!");
+            if (OutputData.Length > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 2).ToString() + " chars.");
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
@@ -328,9 +390,11 @@ namespace Drbg_Test
         public void GetInt16s(Int16[] OutputData)
         {
             if (OutputData == null)
-                throw new Exception("Output array can not be null!");
+                throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
-                throw new Exception("Output array must be at least 1 in length!");
+                throw new ArgumentOutOfRangeException("Output array must be at least 1 byte in length!");
+            if (OutputData.Length > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 2).ToString() + " short integers.");
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
@@ -343,9 +407,11 @@ namespace Drbg_Test
         public void GetInt32s(Int32[] OutputData)
         {
             if (OutputData == null)
-                throw new Exception("Output array can not be null!");
+                throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
-                throw new Exception("Output array must be at least 1 in length!");
+                throw new ArgumentOutOfRangeException("Output array must be at least 1 in length!");
+            if (OutputData.Length > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 4).ToString() + " integers.");
 
             byte[] data = Generate(OutputData.Length * 4);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
@@ -358,9 +424,11 @@ namespace Drbg_Test
         public void GetInt64s(Int64[] OutputData)
         {
             if (OutputData == null)
-                throw new Exception("Output array can not be null!");
+                throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
-                throw new Exception("Output array must be at least 1 in length!");
+                throw new ArgumentOutOfRangeException("Output array must be at least 1 in length!");
+            if (OutputData.Length > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 8).ToString() + " long integers.");
 
             byte[] data = Generate(OutputData.Length * 8);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
@@ -369,8 +437,38 @@ namespace Drbg_Test
 
         #region Seed Generators
         /// <summary>
-        /// Get a 64 byte/512 bit seed, extra strength. 
-        /// Double random feed(4x 128) are xor'd, hashed, then stacked
+        /// Entropy extractor via SHA256
+        /// </summary>
+        /// <param name="Data">Seed bytes</param>
+        /// <returns>Extracted bytes</returns>
+        internal byte[] Extract(byte[] Data)
+        {
+            using (SHA256 shaHash = SHA256Managed.Create())
+                return shaHash.ComputeHash(Data);
+        }
+
+        /// <summary>
+        /// Get a 64 byte/512 bit seed
+        /// </summary>
+        /// <returns>Random seed [byte[]]</returns>
+        internal static byte[] GetSeed64()
+        {
+            byte[] data = new byte[256];
+            byte[] seed = new byte[64];
+ 
+            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
+                rngRandom.GetBytes(data);
+
+            // entropy extractor
+            using (SHA512 shaHash = SHA512Managed.Create())
+                Buffer.BlockCopy(shaHash.ComputeHash(data), 0, seed, 0, 64);
+
+            return seed;
+        }
+
+        /// <summary>
+        /// Get a 64 byte/512 bit seed, extra strength
+        /// Random feeds(4x 128) are xor'd, hashed, then stacked
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
         internal byte[] GetSeed64Xs()
@@ -588,7 +686,7 @@ namespace Drbg_Test
         }
         #endregion
 
-        #region Constant Table
+        #region Constant Tables
         private readonly UInt32[] Rcon = new UInt32[] {
 			0x00000000, 0x01000000, 0x02000000, 0x04000000, 0x08000000, 0x10000000, 0x20000000, 0x40000000,
 			0x80000000, 0x1b000000, 0x36000000, 0x6c000000, 0xd8000000, 0xab000000, 0x4d000000, 0x9a000000,
