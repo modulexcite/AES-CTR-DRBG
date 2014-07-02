@@ -146,7 +146,7 @@ namespace Drbg_Test
                     Buffer.BlockCopy(seedMaterial, 0, key, 0, KEY_BYTES);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES, iv, 0, BLOCK_SIZE);
                     Buffer.BlockCopy(seedMaterial, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-                    expandedKey = ExpandKey(GetKey());
+                    expandedKey = ExpandKey(key);
                 }
 
                 // increment buffer

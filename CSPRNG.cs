@@ -1,13 +1,15 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Security.Cryptography;
 
 namespace Drbg_Test
 {
     internal static class CSPRNG
     {
+        #region Fields
+        private static RNGCryptoServiceProvider _rngRandom = new RNGCryptoServiceProvider();
+        private static SHA256 _shaHash = SHA256Managed.Create();
+        #endregion
+
         #region Random Output Methods
         /// <summary>
         /// Get a random double
@@ -242,8 +244,7 @@ namespace Drbg_Test
             byte[] data = new byte[256];
             byte[] seed = new byte[64];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-                rngRandom.GetBytes(data);
+            _rngRandom.GetBytes(data);
 
             // entropy extractor
             using (SHA512 shaHash = SHA512Managed.Create())
@@ -265,23 +266,18 @@ namespace Drbg_Test
             byte[] data4 = new byte[128];
             byte[] seed = new byte[64];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-            {
-                // get the random seeds
-                rngRandom.GetBytes(data1);
-                rngRandom.GetBytes(data2);
-                rngRandom.GetBytes(data3);
-                rngRandom.GetBytes(data4);
 
-                using (SHA256 shaHash = SHA256Managed.Create())
-                {
-                    // get the hash values
-                    data1 = shaHash.ComputeHash(data1);
-                    data2 = shaHash.ComputeHash(data2);
-                    data3 = shaHash.ComputeHash(data3);
-                    data4 = shaHash.ComputeHash(data4);
-                }
-            }
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
+            _rngRandom.GetBytes(data3);
+            _rngRandom.GetBytes(data4);
+
+            // get the hash values
+            data1 = _shaHash.ComputeHash(data1);
+            data2 = _shaHash.ComputeHash(data2);
+            data3 = _shaHash.ComputeHash(data3);
+            data4 = _shaHash.ComputeHash(data4);
 
             // xor buffer 1 and 3
             for (int j = 0; j < 32; j++)
@@ -306,12 +302,10 @@ namespace Drbg_Test
         {
             byte[] data = new byte[128];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-                rngRandom.GetBytes(data);
+            _rngRandom.GetBytes(data);
 
             // entropy extractor
-            using (SHA256 shaHash = SHA256Managed.Create())
-                return shaHash.ComputeHash(data);
+            return _shaHash.ComputeHash(data);
         }
 
         /// <summary>
@@ -323,19 +317,13 @@ namespace Drbg_Test
             byte[] data1 = new byte[128];
             byte[] data2 = new byte[128];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-            {
-                // get the random seeds
-                rngRandom.GetBytes(data1);
-                rngRandom.GetBytes(data2);
-            }
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
 
-            using (SHA256 shaHash = SHA256Managed.Create())
-            {
-                // get the hash values
-                data1 = shaHash.ComputeHash(data1);
-                data2 = shaHash.ComputeHash(data2);
-            }
+            // get the hash values
+            data1 = _shaHash.ComputeHash(data1);
+            data2 = _shaHash.ComputeHash(data2);
 
             // xor buffer 1 and 2
             for (int j = 0; j < 32; j++)
@@ -356,12 +344,10 @@ namespace Drbg_Test
             byte[] result1 = new byte[16];
             byte[] result2 = new byte[16];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-                rngRandom.GetBytes(data);
+            _rngRandom.GetBytes(data);
 
             // entropy extractor
-            using (SHA256 shaHash = SHA256Managed.Create())
-                hash = shaHash.ComputeHash(data);
+            hash = _shaHash.ComputeHash(data);
 
             Buffer.BlockCopy(hash, 0, result1, 0, 16);
             Buffer.BlockCopy(hash, 16, result2, 0, 16);
@@ -385,20 +371,16 @@ namespace Drbg_Test
             byte[] result = new byte[16];
             byte[] result2 = new byte[16];
 
-            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
-            {
-                // get the random seeds
-                rngRandom.GetBytes(data1);
-                rngRandom.GetBytes(data2);
-            }
+            // get the random seeds
+            _rngRandom.GetBytes(data1);
+            _rngRandom.GetBytes(data2);
 
             // xor buffer 1 and 2
             for (int j = 0; j < 128; j++)
                 data1[j] ^= data2[j];
 
             // entropy extractor
-            using (SHA256 shaHash = SHA256Managed.Create())
-                hash = shaHash.ComputeHash(data1);
+            hash = _shaHash.ComputeHash(data1);
 
             Buffer.BlockCopy(hash, 0, result, 0, 16);
             Buffer.BlockCopy(hash, 16, result2, 0, 16);
