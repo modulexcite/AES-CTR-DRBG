@@ -37,12 +37,62 @@ namespace Drbg_Test
         }
 
         /// <summary>
+        /// Get a random short integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random Int16</returns>
+        internal static Int16 NextInt16(Int16 Maximum)
+        {
+            Int16 num = 0;
+            while ((num = NextInt16()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random short integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random Int16</returns>
+        internal static Int16 NextInt16(Int16 Maximum, Int16 Minimum)
+        {
+            Int16 num = 0;
+            while ((num = NextInt16()) > Maximum || num < Minimum) { }
+            return num;
+        }
+
+        /// <summary>
         /// Get a random unsigned short integer
         /// </summary>
         /// <returns>Random UInt16</returns>
         internal static UInt16 NextUInt16()
         {
             return BitConverter.ToUInt16(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned short integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random UInt16</returns>
+        internal static UInt16 NextUInt16(UInt16 Maximum)
+        {
+            UInt16 num = 0;
+            while ((num = NextUInt16()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random unsigned short integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random UInt32</returns>
+        internal static UInt16 NextUInt16(UInt16 Maximum, UInt16 Minimum)
+        {
+            UInt16 num = 0;
+            while ((num = NextUInt16()) > Maximum || num < Minimum) { }
+            return num;
         }
 
         /// <summary>
@@ -55,12 +105,62 @@ namespace Drbg_Test
         }
 
         /// <summary>
+        /// Get a random integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random Int32</returns>
+        internal static Int32 NextInt32(Int32 Maximum)
+        {
+            Int32 num = 0;
+            while ((num = NextInt32()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random Int32</returns>
+        internal static Int32 NextInt32(Int32 Maximum, Int32 Minimum)
+        {
+            Int32 num = 0;
+            while ((num = NextInt32()) > Maximum || num < Minimum) { }
+            return num;
+        }
+
+        /// <summary>
         /// Get a random unsigned 32bit integer
         /// </summary>
         /// <returns>Random UInt32</returns>
         internal static UInt32 NextUInt32()
         {
             return BitConverter.ToUInt32(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random UInt32</returns>
+        internal static UInt32 NextUInt32(UInt32 Maximum)
+        {
+            UInt32 num = 0;
+            while ((num = NextUInt32()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random unsigned integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random UInt32</returns>
+        internal static UInt32 NextUInt32(UInt32 Maximum, UInt32 Minimum)
+        {
+            UInt32 num = 0;
+            while ((num = NextUInt32()) > Maximum || num < Minimum) { }
+            return num;
         }
 
         /// <summary>
@@ -73,12 +173,62 @@ namespace Drbg_Test
         }
 
         /// <summary>
+        /// Get a random long integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random Int64</returns>
+        internal static Int64 NextInt64(Int64 Maximum)
+        {
+            Int64 num = 0;
+            while ((num = NextInt64()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random long integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random Int64</returns>
+        internal static Int64 NextInt64(Int64 Maximum, Int64 Minimum)
+        {
+            Int64 num = 0;
+            while ((num = NextInt64()) > Maximum || num < Minimum) { }
+            return num;
+        }
+
+        /// <summary>
         /// Get a random unsigned long integer
         /// </summary>
         /// <returns>Random UInt64</returns>
         internal static UInt64 NextUInt64()
         {
             return BitConverter.ToUInt64(GetSeed16(), 0);
+        }
+
+        /// <summary>
+        /// Get a random unsigned long integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <returns>Random UInt64</returns>
+        internal static UInt64 NextUInt64(UInt64 Maximum)
+        {
+            UInt64 num = 0;
+            while ((num = NextUInt64()) > Maximum) { }
+            return num;
+        }
+
+        /// <summary>
+        /// Get a random unsigned long integer
+        /// </summary>
+        /// <param name="Maximum">Maximum value</param>
+        /// <param name="Minimum">Minimum value</param>
+        /// <returns>Random UInt64</returns>
+        internal static UInt64 NextUInt64(UInt64 Maximum, UInt64 Minimum)
+        {
+            UInt64 num = 0;
+            while ((num = NextUInt64()) > Maximum || num < Minimum) { }
+            return num;
         }
         #endregion
 
@@ -141,7 +291,7 @@ namespace Drbg_Test
             for (int j = 0; j < 32; j++)
                 data2[j] ^= data4[j];
 
-            // copy through entropy extractor
+            // copy through
             Buffer.BlockCopy(data1, 0, seed, 0, 32);
             Buffer.BlockCopy(data2, 0, seed, 32, 32);
 

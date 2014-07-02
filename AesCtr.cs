@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Security.Cryptography;
+using System.Collections.Specialized;
 
 /// An AES-CTR-DRBG implementation..
 /// AES routines based on several implementations including Mono: https://github.com/mono, and BouncyCastle: http://bouncycastle.org/
@@ -17,6 +18,7 @@ namespace Drbg_Test
         #region Constants
         private const Int32 BLOCK_SIZE = 16;
         private const Int32 EXPANDED_KEYSIZE = 60;
+        private const Int32 HASH_BUFFERSIZE = 64;
         private const Int32 KEY_BITS = 256;
         private const Int32 KEY_BYTES = 32;
         private const Int32 ENGINE_MAXPULL = 10240000;
@@ -109,8 +111,8 @@ namespace Drbg_Test
 
         #region Byte Array Generators
         /// <summary>
-        /// Generate a block of random bytes, auto Re-Seeds at ReSeedInterval (10Kib by default)
-        /// Re-Keys at ReKeyInterval
+        /// Generate a block of random bytes, using auto Re-Seed mode
+        /// Re-Keys at ReKeyInterval (10Kib by default)
         /// </summary>
         /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Data [byte[]]</returns>
@@ -118,7 +120,8 @@ namespace Drbg_Test
         {
             // too large!
             if (Size > ENGINE_MAXPULL)
-                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + 
+                    ENGINE_MAXPULL.ToString() + " bytes.");
 
             int returnSize = Size;
             // adjust to upper divisble of block size
@@ -181,7 +184,7 @@ namespace Drbg_Test
         /// <summary>
         /// Generate a block of random bytes using a rotating key scheme
         /// </summary>
-        /// <param name="Seed">Random seed, Fixed size: must be 512 bits/64 bytes</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Random data [byte[]]</returns>
         public byte[] Generate(byte[] Seed, int Size)
@@ -199,6 +202,7 @@ namespace Drbg_Test
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             int lastBlock = Size - BLOCK_SIZE;
             UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
             byte[] key = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
@@ -239,22 +243,26 @@ namespace Drbg_Test
                     // copy transform to iv
                     Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
 
-                    // increment key counter every 2 blocks
-                    if (counter % 2 == 1)
-                        Increment(keyCounter);
-
-                    // rotating key -re-key default every 1 kib
-                    if (i % ReKeyInterval == 0)
+                    if (i > 0)
                     {
-                        // extract counter via sha256
-                        keyCounter = Extract(keyCounter);
+                        // increment key counter every 2 blocks
+                        if (counter % 2 == 1)
+                            Increment(keyCounter);
 
-                        // xor key with keycounter
-                        for (int j = 0; j < KEY_BYTES; j++)
-                            key[j] ^= keyCounter[j];
+                        // rotating key -re-key default every 1 kib
+                        if (i % ReKeyInterval == 0)
+                        {
+                            // xor key with keycounter
+                            for (int j = 0; j < KEY_BYTES; j++)
+                                key[j] ^= keyCounter[j];
 
-                        // expand the key
-                        expandedKey = ExpandKey(key);
+                            // expand the key
+                            expandedKey = ExpandKey(key);
+                            // expand counter to 64 bytes for hash
+                            hashBuffer = ExpandArray(keyCounter);
+                            // extract new keyCounter via sha256
+                            keyCounter = Extract(hashBuffer);
+                        }
                     }
                     counter++;
                 }
@@ -269,10 +277,73 @@ namespace Drbg_Test
         }
 
         /// <summary>
+        /// Generate a block of random bytes, using Aes Couner mode with block chaining
+        /// </summary>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <param name="Size">Size of data return in bytes.</param>
+        /// <returns>Random data [byte[]]</returns>
+        public byte[] GenerateCtr(byte[] Seed, int Size)
+        {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
+            // wrong seed size!
+            if (Seed.Length != 64)
+                throw new Exception("Seed size must be 64 bytes long!");
+
+            int returnSize = Size;
+            // adjust to divisble of block size
+            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            int lastBlock = Size - BLOCK_SIZE;
+            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] key = new byte[KEY_BYTES];
+            byte[] outputBlock = new byte[BLOCK_SIZE];
+            byte[] outputData = new byte[returnSize];
+            byte[] seedBuffer = new byte[BLOCK_SIZE];
+            byte[] tempBuffer = new byte[KEY_BYTES];
+            byte[] iv = new byte[BLOCK_SIZE];
+
+            // copy the seed to key, iv, and counter
+            Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
+
+            // expand key
+            expandedKey = ExpandKey(key);
+
+            for (int i = 0; i < Size; i += BLOCK_SIZE)
+            {
+                // increment buffer
+                Increment(seedBuffer);
+
+                // xor the iv and buffer
+                for (int j = 0; j < BLOCK_SIZE; j++)
+                    iv[j] ^= seedBuffer[j];
+
+                // rotating the iv (chaining)
+                TransformBlock(iv, outputBlock, expandedKey);
+
+                if (i != lastBlock)
+                {
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
+                }
+                else
+                {
+                    // copy last block
+                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
+            }
+            return outputData;
+        }
+
+        /// <summary>
         /// Generate a block of random bytes, uses an oscillating key scheme
         /// </summary>
-        /// <param name="Seed">Random seed, Fixed size: must be 512 bits/64 bytes</param>
-        /// <param name="Entropy">Random key entropy for rotation, Must be 256 bits/32 bytes</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Random data [byte[]]</returns>
         public byte[] GenerateOsc(byte[] Seed, int Size)
@@ -343,7 +414,6 @@ namespace Drbg_Test
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
-
             return outputData;
         }
         #endregion
@@ -437,17 +507,6 @@ namespace Drbg_Test
 
         #region Seed Generators
         /// <summary>
-        /// Entropy extractor via SHA256
-        /// </summary>
-        /// <param name="Data">Seed bytes</param>
-        /// <returns>Extracted bytes</returns>
-        internal byte[] Extract(byte[] Data)
-        {
-            using (SHA256 shaHash = SHA256Managed.Create())
-                return shaHash.ComputeHash(Data);
-        }
-
-        /// <summary>
         /// Get a 64 byte/512 bit seed
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
@@ -529,6 +588,35 @@ namespace Drbg_Test
         #endregion
 
         #region Helpers
+        private byte[] ExpandArray(byte[] SubBuffer)
+        {
+            int bufferLength = SubBuffer.Length;
+            int counter = 0;
+            int numLength = bufferLength / 4;
+            byte[] reverseBuffer = new byte[bufferLength * 2];
+            byte[] tempBuffer = new byte[bufferLength];
+            int[] numBuffer = new int[numLength];
+
+            // copy to int array
+            Buffer.BlockCopy(SubBuffer, 0, numBuffer, 0, SubBuffer.Length);
+            // reverse the bits
+            for (int i = 0; i < numLength; i++)
+                numBuffer[i] = ~numBuffer[i];
+            // copy to byte buffer
+            Buffer.BlockCopy(numBuffer, 0, tempBuffer, 0, tempBuffer.Length);
+            // reverse the array
+            Array.Reverse(tempBuffer, 0, tempBuffer.Length);
+
+            // interpolate buffers
+            for (int i = 0; i < 32; i += 1)
+            {
+                reverseBuffer[counter++] = SubBuffer[i];
+                reverseBuffer[counter++] = tempBuffer[i];
+            }
+
+            return reverseBuffer;
+        }
+
         private uint[] ExpandKey(byte[] Key)
         {
             // Setup Expanded Key
@@ -563,6 +651,17 @@ namespace Drbg_Test
             }
 
             return exKey;
+        }
+
+        /// <summary>
+        /// Entropy extractor via SHA256
+        /// </summary>
+        /// <param name="Data">Seed bytes</param>
+        /// <returns>Extracted bytes</returns>
+        internal byte[] Extract(byte[] Data)
+        {
+            using (SHA256 shaHash = SHA256Managed.Create())
+                return shaHash.ComputeHash(Data);
         }
 
         private void Increment(byte[] Data)
