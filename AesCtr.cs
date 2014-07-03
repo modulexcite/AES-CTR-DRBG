@@ -168,7 +168,7 @@ namespace Drbg_Test
 
                     // re-key every (default: 1 kib)
                     if (i % ReKeyInterval == 0)
-                        expandedKey = ExpandKey(GetKey());
+                        expandedKey = ExpandKey(GetSeed32Xs());
                 }
                 else
                 {
@@ -177,7 +177,6 @@ namespace Drbg_Test
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
-
             return outputData;
         }
 
@@ -359,9 +358,9 @@ namespace Drbg_Test
             // adjust to divisble of block size
             Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             int lastBlock = Size - BLOCK_SIZE;
-            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
+            UInt32[] expandedKey1 = new UInt32[EXPANDED_KEYSIZE];
             UInt32[] expandedKey2 = new UInt32[EXPANDED_KEYSIZE];
-            byte[] key = new byte[KEY_BYTES];
+            byte[] key1 = new byte[KEY_BYTES];
             byte[] key2 = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[returnSize];
@@ -371,17 +370,17 @@ namespace Drbg_Test
             int counter = 0;
 
             // copy the seed to buffer, key and iv
-            Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, 0, key1, 0, KEY_BYTES);
             Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES, key2, 0, KEY_BYTES);
 
             // xor key2 and key
             for (int j = 0; j < KEY_BYTES; j++)
-                key2[j] ^= key[j];
+                key2[j] ^= key1[j];
 
             // expand keys
-            expandedKey = ExpandKey(key);
+            expandedKey1 = ExpandKey(key1);
             expandedKey2 = ExpandKey(key2);
 
             for (int i = 0; i < Size; i += BLOCK_SIZE)
@@ -395,7 +394,7 @@ namespace Drbg_Test
 
                 // rotating key encryption
                 if (counter % 2 == 1)
-                    TransformBlock(iv, outputBlock, expandedKey);
+                    TransformBlock(iv, outputBlock, expandedKey1);
                 else
                     TransformBlock(iv, outputBlock, expandedKey2);
 
@@ -423,7 +422,8 @@ namespace Drbg_Test
         /// Get an array of random bytes
         /// </summary>
         /// <param name="OutputData">Initialized array that receives the random bytes</param>
-        public void GetBytes(byte[] OutputData)
+        /// <returns>Random bytes created [Int32]</returns>
+        public Int32 GetBytes(byte[] OutputData)
         {
             if (OutputData == null)
                 throw new ArgumentNullException("Output array can not be null!");
@@ -434,74 +434,83 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+            return OutputData.Length;
         }
 
         /// <summary>
         /// Get an array of random chars
         /// </summary>
         /// <param name="OutputData">Initialized array that receives the random chars</param>
-        public void GetChars(char[] OutputData)
+        /// <returns>Random chars created [Int32]</returns>
+        public Int32 GetChars(char[] OutputData)
         {
             if (OutputData == null)
                 throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
                 throw new ArgumentOutOfRangeException("Output array must be at least 1 char in length!");
-            if (OutputData.Length > ENGINE_MAXPULL)
+            if (OutputData.Length > ENGINE_MAXPULL / 2)
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 2).ToString() + " chars.");
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+            return OutputData.Length;
         }
 
         /// <summary>
         /// Get an array of random Int16s
         /// </summary>
         /// <param name="OutputData">Initialized array that receives the random Int16s</param>
-        public void GetInt16s(Int16[] OutputData)
+        /// <returns>Random Int16s created [Int32]</returns>
+        public Int32 GetInt16s(Int16[] OutputData)
         {
             if (OutputData == null)
                 throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
                 throw new ArgumentOutOfRangeException("Output array must be at least 1 byte in length!");
-            if (OutputData.Length > ENGINE_MAXPULL)
+            if (OutputData.Length > ENGINE_MAXPULL / 2)
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 2).ToString() + " short integers.");
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+            return OutputData.Length;
         }
 
         /// <summary>
         /// Get an array of random Int32s
         /// </summary>
         /// <param name="OutputData">Initialized array that receives the random Int32s</param>
-        public void GetInt32s(Int32[] OutputData)
+        /// <returns>Random Int32s created [Int32]</returns>
+        public Int32 GetInt32s(Int32[] OutputData)
         {
             if (OutputData == null)
                 throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
                 throw new ArgumentOutOfRangeException("Output array must be at least 1 in length!");
-            if (OutputData.Length > ENGINE_MAXPULL)
+            if (OutputData.Length > ENGINE_MAXPULL / 4)
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 4).ToString() + " integers.");
 
             byte[] data = Generate(OutputData.Length * 4);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+            return OutputData.Length;
         }
 
         /// <summary>
         /// Get an array of random Int64s
         /// </summary>
         /// <param name="OutputData">Initialized array that receives the random Int64s</param>
-        public void GetInt64s(Int64[] OutputData)
+        /// <returns>Random Int64s created [Int32]</returns>
+        public Int32 GetInt64s(Int64[] OutputData)
         {
             if (OutputData == null)
                 throw new ArgumentNullException("Output array can not be null!");
             if (OutputData.Length < 1)
                 throw new ArgumentOutOfRangeException("Output array must be at least 1 in length!");
-            if (OutputData.Length > ENGINE_MAXPULL)
+            if (OutputData.Length > ENGINE_MAXPULL / 8)
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + (ENGINE_MAXPULL / 8).ToString() + " long integers.");
 
             byte[] data = Generate(OutputData.Length * 8);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
+            return OutputData.Length;
         }
         #endregion
 
@@ -512,7 +521,7 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed64()
         {
-            byte[] data = new byte[256];
+            byte[] data = new byte[128];         
             byte[] seed = new byte[64];
  
             using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
@@ -532,10 +541,10 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal byte[] GetSeed64Xs()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
-            byte[] data3 = new byte[128];
-            byte[] data4 = new byte[128];
+            byte[] data1 = new byte[64];
+            byte[] data2 = new byte[64];
+            byte[] data3 = new byte[64];
+            byte[] data4 = new byte[64];
             byte[] seed = new byte[64];
 
             using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
@@ -572,18 +581,34 @@ namespace Drbg_Test
         }
 
         /// <summary>
-        /// Get a 32 byte/256 bit key
+        /// Get a 32 byte/256 bit seed, extra strength
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
-        internal byte[] GetKey()
+        internal static byte[] GetSeed32Xs()
         {
-            byte[] data = GetSeed64Xs();
-            byte[] key = new byte[32];
+            byte[] data1 = new byte[128];
+            byte[] data2 = new byte[128];
 
-            Buffer.BlockCopy(data, 0, key, 0, 32);
+            using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
+            {
+                // get the random seeds
+                rngRandom.GetBytes(data1);
+                rngRandom.GetBytes(data2);
+            }
 
-            // entropy extractor
-            return key;
+            using (SHA256 shaHash = SHA256Managed.Create())
+            {
+                // get the hash values
+                data1 = shaHash.ComputeHash(data1);
+                data2 = shaHash.ComputeHash(data2);
+            }
+
+            // xor buffer 1 and 2
+            for (int j = 0; j < 32; j++)
+                data1[j] ^= data2[j];
+
+            // return
+            return data1;
         }
         #endregion
 

@@ -241,7 +241,7 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed64()
         {
-            byte[] data = new byte[256];
+            byte[] data = new byte[128];
             byte[] seed = new byte[64];
 
             _rngRandom.GetBytes(data);
@@ -260,10 +260,10 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed64Xs()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
-            byte[] data3 = new byte[128];
-            byte[] data4 = new byte[128];
+            byte[] data1 = new byte[64];
+            byte[] data2 = new byte[64];
+            byte[] data3 = new byte[64];
+            byte[] data4 = new byte[64];
             byte[] seed = new byte[64];
 
 
@@ -300,7 +300,7 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed32()
         {
-            byte[] data = new byte[128];
+            byte[] data = new byte[64];
 
             _rngRandom.GetBytes(data);
 
@@ -314,8 +314,8 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed32Xs()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
+            byte[] data1 = new byte[64];
+            byte[] data2 = new byte[64];
 
             // get the random seeds
             _rngRandom.GetBytes(data1);
@@ -339,7 +339,7 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed16()
         {
-            byte[] data = new byte[128];
+            byte[] data = new byte[64];
             byte[] hash = new byte[32];
             byte[] result1 = new byte[16];
             byte[] result2 = new byte[16];
@@ -365,8 +365,8 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed16Xs()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
+            byte[] data1 = new byte[64];
+            byte[] data2 = new byte[64];
             byte[] hash = new byte[32];
             byte[] result = new byte[16];
             byte[] result2 = new byte[16];
@@ -376,7 +376,7 @@ namespace Drbg_Test
             _rngRandom.GetBytes(data2);
 
             // xor buffer 1 and 2
-            for (int j = 0; j < 128; j++)
+            for (int j = 0; j < 64; j++)
                 data1[j] ^= data2[j];
 
             // entropy extractor
