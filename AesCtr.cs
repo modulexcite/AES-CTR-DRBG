@@ -1,23 +1,48 @@
 ﻿using System;
 using System.Security.Cryptography;
-using System.Collections.Specialized;
 
 /// An AES-CTR-DRBG implementation..
 /// AES routines based on several implementations including Mono: https://github.com/mono, and BouncyCastle: http://bouncycastle.org/
 /// Many thanks to the authors of those great projects, and the authors of the original Novell implementation.. j.u.
-
+/// 
 /// Further revisions will be maintained on GitHub: https://github.com/Steppenwolfe65/AES-CTR-DRBG
-/// Licence is free for all use, provided the user accepts that the author, (John Underhill), offers no support for this software, and 
-/// disavows any and all liability or responsibility in it's use or distributions thereof, now and for all time.
-/// This header must remain in any distributions/derivations of this class.
+/// 
+/// Licence is free for all use, provided the user accepts that the author, (John Underhill), offers absolutely no support for this software, 
+/// makes no claim of fitness or merchantability, and all and any responsibility of any kind, known or unknown is entirely the responsibility of the user or distributer of this code 
+/// or any derivations thereof. I further disavow any and all liability or responsibility in its use or any derivations or distributions thereof, now and for all time.
+/// This header must remain in any distributions or derivations of this class.
 
 namespace Drbg_Test
 {
+    /// <summary>
+    /// List of available engines
+    /// </summary>
+    internal enum Engines : int
+    {
+        /// <summary>
+        /// Counter mode with block chaining
+        /// </summary>
+        Chaining,
+        /// <summary>
+        /// AES transforms Oscillate between 2 keys
+        /// </summary>
+        Oscillating,
+        /// <summary>
+        /// AES Keys are exchanged at ReKeyInterval
+        /// </summary>
+        Cycling,
+        /// <summary>
+        /// AES Keys are exchanged at random intervals
+        /// </summary>
+        Chaotic,
+    }
+
     internal class AesCtr : IDisposable
     {
         #region Constants
         private const Int32 BLOCK_SIZE = 16;
         private const Int32 EXPANDED_KEYSIZE = 60;
+        private const Int32 EXPANDED_KEYBYTES = 240;
         private const Int32 HASH_BUFFERSIZE = 64;
         private const Int32 KEY_BITS = 256;
         private const Int32 KEY_BYTES = 32;
@@ -55,11 +80,11 @@ namespace Drbg_Test
 
         #region Properties
         /// <summary>
-        /// Number of bytes between re-keys in auto and rotating key modes
-        /// Must be divisble of key size (32 bytes), 
-        /// Minimum size: 128
-        /// Maximum Size: 10240000
-        /// Default Size: 1024
+        /// Number of bytes between re-keys in Auto-Seed and rotating key modes
+        /// Must be divisble of key size (32 bytes).
+        /// Minimum size: 128.
+        /// Maximum Size: 10240000.
+        /// Default Size: 1024.
         /// </summary>
         public int ReKeyInterval 
         {
@@ -78,11 +103,11 @@ namespace Drbg_Test
         }
 
         /// <summary>
-        /// Number of bytes before reseed in auto mode
-        /// Must be divisble of blocksize (16 bytes), 
-        /// Minimum size: 128
-        /// Maximum Size: 10240000
-        /// Default Size: 10240
+        /// Number of bytes before reseed in Auto-Seed mode
+        /// Must be divisble of blocksize (16 bytes).
+        /// Minimum size: 128.
+        /// Maximum Size: 10240000.
+        /// Default Size: 10240.
         /// </summary>
         public int ReSeedInterval 
         {
@@ -111,69 +136,98 @@ namespace Drbg_Test
 
         #region Byte Array Generators
         /// <summary>
-        /// Generate a block of random bytes, using auto Re-Seed mode
-        /// Re-Keys at ReKeyInterval (10Kib by default)
+        /// Algorithm Selection:
+        /// Generate a block of random bytes.
+        /// Maximum Output: 10240000 bytes.
+        /// Minimum Output: 1 byte.
+        /// Seed Must be 64 bytes in length.
+        /// </summary>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <param name="Size">Size of data return in bytes.</param>
+        /// <param name="Engine">Random engine [Engines]</param>
+        /// <returns>Data [byte[]]</returns>
+        public byte[] Generate(int Size, byte[] Seed, Engines Engine)
+        {
+            switch (Engine)
+            {
+                case Engines.Chaotic:
+                    return GenerateCha(Size, Seed);
+                case Engines.Cycling:
+                    return GenerateCyc(Size, Seed);
+                case Engines.Oscillating:
+                    return GenerateOsc(Size, Seed);
+                default:
+                    return GenerateCtr(Size, Seed);
+            }
+        }
+
+        /// <summary>
+        /// Auto ReSeed Mode:
+        /// Generate a block of random bytes, using auto Re-Seed mode.
+        /// Re-Keys at ReKeyInterval (1Kib by default).
+        /// Re-Seeds at ReSeedInterval (10Kib by default).
+        /// If usen in an xor cipher, set ReKeyInterval = ReSeedInterval recommended
         /// </summary>
         /// <param name="Size">Size of data return in bytes.</param>
         /// <returns>Data [byte[]]</returns>
-        public byte[] Generate(int Size)
+        public byte[] Generate(Int32 Size)
         {
             // too large!
             if (Size > ENGINE_MAXPULL)
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + 
                     ENGINE_MAXPULL.ToString() + " bytes.");
 
-            int returnSize = Size;
-            // adjust to upper divisble of block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
-            int lastBlock = Size - BLOCK_SIZE;
-            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
-            byte[] key = new byte[KEY_BYTES];
+            // align to divisible of block size
+            Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            Int32 lastBlock = alignedSize - BLOCK_SIZE;
+            UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] ctrBuffer = new byte[BLOCK_SIZE];
+            byte[] keyBuffer = new byte[KEY_BYTES];
+            byte[] ivBuffer = new byte[BLOCK_SIZE];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[returnSize];
+            byte[] outputData = new byte[Size];
             byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] tempBuffer = new byte[KEY_BYTES];
-            byte[] iv = new byte[BLOCK_SIZE];
-            byte[] seedMaterial = new byte[BLOCK_SIZE];
 
-            for (int i = 0; i < Size; i += BLOCK_SIZE)
+            for (int i = 0; i < alignedSize; i += BLOCK_SIZE)
             {
                 // re-seed (default: 10 kib)
                 if (i % ReSeedInterval == 0)
                 {
-                    seedMaterial = GetSeed64Xs();
+                    // get random seed
+                    seedBuffer = GetSeed64Xs();
                     // copy the seed to buffer, key and iv
-                    Buffer.BlockCopy(seedMaterial, 0, key, 0, KEY_BYTES);
-                    Buffer.BlockCopy(seedMaterial, KEY_BYTES, iv, 0, BLOCK_SIZE);
-                    Buffer.BlockCopy(seedMaterial, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-                    expandedKey = ExpandKey(key);
+                    Buffer.BlockCopy(seedBuffer, 0, keyBuffer, 0, KEY_BYTES);
+                    Buffer.BlockCopy(seedBuffer, KEY_BYTES, ivBuffer, 0, BLOCK_SIZE);
+                    Buffer.BlockCopy(seedBuffer, KEY_BYTES + BLOCK_SIZE, ctrBuffer, 0, BLOCK_SIZE);
+                    // expand to AES key
+                    exKey = ExpandKey(keyBuffer);
                 }
 
-                // increment buffer
-                Increment(seedBuffer);
+                // increment counter
+                Increment(ctrBuffer);
 
                 // xor the iv and buffer
                 for (int j = 0; j < BLOCK_SIZE; j++)
-                    iv[j] ^= seedBuffer[j];
+                    ivBuffer[j] ^= ctrBuffer[j];
 
                 // encrypt iv (aes: data, output, key)
-                TransformBlock(iv, outputBlock, expandedKey);
+                Transform(ivBuffer, outputBlock, exKey);
 
                 if (i != lastBlock)
                 {
                     // copy transform to output
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
                     // copy transform to iv
-                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, ivBuffer, 0, BLOCK_SIZE);
 
-                    // re-key every (default: 1 kib)
+                    // additional re-key (default: 1 kib)
                     if (i % ReKeyInterval == 0)
-                        expandedKey = ExpandKey(GetSeed32Xs());
+                        exKey = ExpandKey(GetSeed32Xs());
                 }
                 else
                 {
                     // copy last block
-                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
+                    int finalSize = (Size % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (Size % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
@@ -181,12 +235,182 @@ namespace Drbg_Test
         }
 
         /// <summary>
-        /// Generate a block of random bytes using a rotating key scheme
+        /// Chaotic ReKey Mode:
+        /// Generate a block of random bytes using a chaotic re-key mode.
+        /// Re-Keys at random intervals.
+        /// Re-Seed time is user discriminate.
         /// </summary>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <param name="Size">Size of data return in bytes.</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <returns>Random data [byte[]]</returns>
-        public byte[] Generate(byte[] Seed, int Size)
+        public byte[] GenerateCha(Int32 Size, byte[] Seed)
+        {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is "
+                    + ENGINE_MAXPULL.ToString() + " bytes.");
+            // wrong seed size!
+            if (Seed.Length != 64)
+                throw new ArgumentOutOfRangeException("Seed size must be 64 bytes long!");
+
+            // align to divisible of block size
+            Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            Int64 keyIterations = 0;
+            Int32 lastBlock = alignedSize - BLOCK_SIZE;
+            UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] ctrBuffer = new byte[BLOCK_SIZE];
+            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
+            byte[] ivBuffer = new byte[BLOCK_SIZE];
+            byte[] keyBuffer = new byte[KEY_BYTES];
+            byte[] keyCounter = new byte[KEY_BYTES];
+            byte[] outputBlock = new byte[BLOCK_SIZE];
+            byte[] outputData = new byte[Size];
+
+            const Int32 DIVISOR = 512;
+
+            // copy the seed to buffer, key, keycounter, and iv
+            Buffer.BlockCopy(Seed, 0, keyBuffer, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, ivBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, ctrBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES, keyCounter, 0, KEY_BYTES);
+
+            // xor the keycounter and key
+            for (int j = 0; j < KEY_BYTES; j++)
+                keyCounter[j] ^= keyBuffer[j];
+
+            // expand key
+            exKey = ExpandKey(keyBuffer);
+
+            // get the int64 counter
+            keyIterations = ExtractLong(keyCounter);
+
+            for (int i = 0; i < alignedSize; i += BLOCK_SIZE)
+            {
+                // increment buffer
+                Increment(ctrBuffer);
+
+                // xor the iv and buffer
+                for (int j = 0; j < BLOCK_SIZE; j++)
+                    ivBuffer[j] ^= ctrBuffer[j];
+
+                // encrypt iv (aes: data, output, key)
+                Transform(ivBuffer, outputBlock, exKey);
+
+                if (i != lastBlock)
+                {
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, ivBuffer, 0, BLOCK_SIZE);
+
+                    if (i > 0)
+                    {
+                        // re-key when remainder of modulo with counter (induction variable) is 0
+                        if (keyIterations % DIVISOR == 0)
+                        {
+                            // xor key with keycounter
+                            for (int j = 0; j < KEY_BYTES; j++)
+                                keyBuffer[j] ^= keyCounter[j];
+
+                            // Reset State //
+                            // expand the key
+                            exKey = ExpandKey(keyBuffer);
+                            // expand counter to 64 bytes for hash
+                            hashBuffer = ExpandArray(keyCounter);
+                            // extract new keyCounter via sha256
+                            keyCounter = Extract(hashBuffer);
+                            // get the int64 counter
+                            keyIterations = ExtractLong(keyCounter);
+                            // expand seed counter to 64 bytes
+                            hashBuffer = ExpandArray(ctrBuffer);
+                            // create a new seed
+                            ctrBuffer = Extract(hashBuffer);
+                        }
+                    }
+                    keyIterations++;
+                }
+                else
+                {
+                    // copy last block
+                    int finalSize = (Size % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (Size % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
+            }
+            return outputData;
+        }
+
+        /// <summary>
+        /// CTR Chaining Mode:
+        /// Generate a block of random bytes, using Aes Couner mode with block chaining
+        /// </summary>
+        /// <param name="Size">Size of data return in bytes</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <returns>Random data [byte[]]</returns>
+        public byte[] GenerateCtr(Int32 Size, byte[] Seed)
+        {
+            // too large!
+            if (Size > ENGINE_MAXPULL)
+                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
+            // wrong seed size!
+            if (Seed.Length != 64)
+                throw new Exception("Seed size must be 64 bytes long!");
+            
+            // align to divisible of block size
+            Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            Int32 lastBlock = alignedSize - BLOCK_SIZE;
+            UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] ctrBuffer = new byte[BLOCK_SIZE];
+            byte[] ivBuffer = new byte[BLOCK_SIZE];
+            byte[] keyBuffer = new byte[KEY_BYTES];
+            byte[] outputBlock = new byte[BLOCK_SIZE];
+            byte[] outputData = new byte[Size];
+
+            // copy the seed to key, iv, and counter
+            Buffer.BlockCopy(Seed, 0, keyBuffer, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, ivBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, ctrBuffer, 0, BLOCK_SIZE);
+
+            // expand key
+            exKey = ExpandKey(keyBuffer);
+
+            for (int i = 0; i < alignedSize; i += BLOCK_SIZE)
+            {
+                // increment buffer
+                Increment(ctrBuffer);
+
+                // xor the iv and buffer
+                for (int j = 0; j < BLOCK_SIZE; j++)
+                    ivBuffer[j] ^= ctrBuffer[j];
+
+                // rotating the iv (chaining)
+                Transform(ivBuffer, outputBlock, exKey);
+
+                if (i != lastBlock)
+                {
+                    // copy transform to output
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
+                    // copy transform to iv
+                    Buffer.BlockCopy(outputBlock, 0, ivBuffer, 0, BLOCK_SIZE);
+                }
+                else
+                {
+                    // copy last block
+                    int finalSize = (Size % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (Size % BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
+                }
+            }
+            return outputData;
+        }
+
+        /// <summary>
+        /// Cycling ReKey Mode
+        /// Generate a block of random bytes using a cycling key scheme.
+        /// Re-Keys at ReKeyInterval (1Kib by default).
+        /// </summary>
+        /// <param name="Size">Size of data return in bytes.</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <returns>Random data [byte[]]</returns>
+        public byte[] GenerateCyc(int Size, byte[] Seed)
         {
             // too large!
             if (Size > ENGINE_MAXPULL)
@@ -196,79 +420,83 @@ namespace Drbg_Test
             if (Seed.Length != 64)
                 throw new ArgumentOutOfRangeException("Seed size must be 64 bytes long!");
 
-            int returnSize = Size;
-            // adjust to divisble of block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
-            int lastBlock = Size - BLOCK_SIZE;
-            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
+            // align to divisible of block size
+            Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            Int32 lastBlock = alignedSize - BLOCK_SIZE;
+            Int32 keyIterations = 0;
+            UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] ctrBuffer = new byte[BLOCK_SIZE];
             byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
-            byte[] key = new byte[KEY_BYTES];
+            byte[] ivBuffer = new byte[BLOCK_SIZE];
+            byte[] keyBuffer = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[returnSize];
-            byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] iv = new byte[BLOCK_SIZE];
-            int counter = 0;
+            byte[] outputData = new byte[Size];
 
             // copy the seed to buffer, key, keycounter, and iv
-            Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
-            Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
-            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, 0, keyBuffer, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, ivBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, ctrBuffer, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES, keyCounter, 0, KEY_BYTES);
 
             // xor the keycounter and key
             for (int j = 0; j < KEY_BYTES; j++)
-                keyCounter[j] ^= key[j];
+                keyCounter[j] ^= keyBuffer[j];
 
             // expand key
-            expandedKey = ExpandKey(key);
+            exKey = ExpandKey(keyBuffer);
 
-            for (int i = 0; i < Size; i += BLOCK_SIZE)
+            for (int i = 0; i < alignedSize; i += BLOCK_SIZE)
             {
                 // increment buffer
-                Increment(seedBuffer);
+                Increment(ctrBuffer);
 
                 // xor the iv and buffer
                 for (int j = 0; j < BLOCK_SIZE; j++)
-                    iv[j] ^= seedBuffer[j];
+                    ivBuffer[j] ^= ctrBuffer[j];
 
                 // encrypt iv (aes: data, output, key)
-                TransformBlock(iv, outputBlock, expandedKey);
+                Transform(ivBuffer, outputBlock, exKey);
 
                 if (i != lastBlock)
                 {
                     // copy transform to output
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
                     // copy transform to iv
-                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
+                    Buffer.BlockCopy(outputBlock, 0, ivBuffer, 0, BLOCK_SIZE);
 
                     if (i > 0)
                     {
                         // increment key counter every 2 blocks
-                        if (counter % 2 == 1)
+                        if (keyIterations % 2 == 1)
                             Increment(keyCounter);
 
-                        // rotating key -re-key default every 1 kib
+                        // cycling key -re-key default every 1 kib
                         if (i % ReKeyInterval == 0)
                         {
                             // xor key with keycounter
                             for (int j = 0; j < KEY_BYTES; j++)
-                                key[j] ^= keyCounter[j];
+                                keyBuffer[j] ^= keyCounter[j];
 
+                            // Reset State //
                             // expand the key
-                            expandedKey = ExpandKey(key);
+                            exKey = ExpandKey(keyBuffer);
                             // expand counter to 64 bytes for hash
                             hashBuffer = ExpandArray(keyCounter);
                             // extract new keyCounter via sha256
                             keyCounter = Extract(hashBuffer);
+                            // expand seed counter to 64 bytes
+                            hashBuffer = ExpandArray(ctrBuffer);
+                            // reset the counter
+                            ctrBuffer = Extract(hashBuffer);
                         }
                     }
-                    counter++;
+                    keyIterations++;
                 }
                 else
                 {
                     // copy last block
-                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
+                    int finalSize = (Size % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (Size % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
@@ -276,76 +504,13 @@ namespace Drbg_Test
         }
 
         /// <summary>
-        /// Generate a block of random bytes, using Aes Couner mode with block chaining
-        /// </summary>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
-        /// <param name="Size">Size of data return in bytes.</param>
-        /// <returns>Random data [byte[]]</returns>
-        public byte[] GenerateCtr(byte[] Seed, int Size)
-        {
-            // too large!
-            if (Size > ENGINE_MAXPULL)
-                throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is " + ENGINE_MAXPULL.ToString() + " bytes.");
-            // wrong seed size!
-            if (Seed.Length != 64)
-                throw new Exception("Seed size must be 64 bytes long!");
-
-            int returnSize = Size;
-            // adjust to divisble of block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
-            int lastBlock = Size - BLOCK_SIZE;
-            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
-            byte[] key = new byte[KEY_BYTES];
-            byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[returnSize];
-            byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] tempBuffer = new byte[KEY_BYTES];
-            byte[] iv = new byte[BLOCK_SIZE];
-
-            // copy the seed to key, iv, and counter
-            Buffer.BlockCopy(Seed, 0, key, 0, KEY_BYTES);
-            Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
-            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-
-            // expand key
-            expandedKey = ExpandKey(key);
-
-            for (int i = 0; i < Size; i += BLOCK_SIZE)
-            {
-                // increment buffer
-                Increment(seedBuffer);
-
-                // xor the iv and buffer
-                for (int j = 0; j < BLOCK_SIZE; j++)
-                    iv[j] ^= seedBuffer[j];
-
-                // rotating the iv (chaining)
-                TransformBlock(iv, outputBlock, expandedKey);
-
-                if (i != lastBlock)
-                {
-                    // copy transform to output
-                    Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
-                    // copy transform to iv
-                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
-                }
-                else
-                {
-                    // copy last block
-                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
-                    Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
-                }
-            }
-            return outputData;
-        }
-
-        /// <summary>
+        /// Oscillating ReKey Mode:
         /// Generate a block of random bytes, uses an oscillating key scheme
         /// </summary>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <param name="Size">Size of data return in bytes.</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
         /// <returns>Random data [byte[]]</returns>
-        public byte[] GenerateOsc(byte[] Seed, int Size)
+        public byte[] GenerateOsc(Int32 Size, byte[] Seed)
         {
             // too large!
             if (Size > ENGINE_MAXPULL)
@@ -354,62 +519,84 @@ namespace Drbg_Test
             if (Seed.Length != 64)
                 throw new Exception("Seed size must be 64 bytes long!");
 
-            int returnSize = Size;
-            // adjust to divisble of block size
-            Size = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
-            int lastBlock = Size - BLOCK_SIZE;
-            UInt32[] expandedKey1 = new UInt32[EXPANDED_KEYSIZE];
-            UInt32[] expandedKey2 = new UInt32[EXPANDED_KEYSIZE];
-            byte[] key1 = new byte[KEY_BYTES];
-            byte[] key2 = new byte[KEY_BYTES];
+            // align to divisible of block size
+            Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
+            Int32 blockAccumulater = 0;
+            Int32 lastBlock = alignedSize - BLOCK_SIZE;
+            UInt32[] exKey1 = new UInt32[EXPANDED_KEYSIZE];
+            UInt32[] exKey2 = new UInt32[EXPANDED_KEYSIZE];
+            UInt32[] workingKey = new UInt32[EXPANDED_KEYSIZE];
+            byte[] ctrBuffer = new byte[BLOCK_SIZE];
+            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
+            byte[] ivBuffer = new byte[BLOCK_SIZE];
+            byte[] keyBuffer1 = new byte[KEY_BYTES];
+            byte[] keyBuffer2 = new byte[KEY_BYTES];
             byte[] outputBlock = new byte[BLOCK_SIZE];
-            byte[] outputData = new byte[returnSize];
-            byte[] seedBuffer = new byte[BLOCK_SIZE];
-            byte[] tempBuffer = new byte[KEY_BYTES];
-            byte[] iv = new byte[BLOCK_SIZE];
-            int counter = 0;
+            byte[] outputData = new byte[Size];
+
+            const int DIFFERENTIAL = 64;
 
             // copy the seed to buffer, key and iv
-            Buffer.BlockCopy(Seed, 0, key1, 0, KEY_BYTES);
-            Buffer.BlockCopy(Seed, KEY_BYTES, iv, 0, BLOCK_SIZE);
-            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
-            Buffer.BlockCopy(Seed, KEY_BYTES, key2, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, 0, keyBuffer1, 0, KEY_BYTES);
+            Buffer.BlockCopy(Seed, KEY_BYTES, ivBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, ctrBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES, keyBuffer2, 0, KEY_BYTES);
 
             // xor key2 and key
             for (int j = 0; j < KEY_BYTES; j++)
-                key2[j] ^= key1[j];
+                keyBuffer2[j] ^= keyBuffer1[j];
 
             // expand keys
-            expandedKey1 = ExpandKey(key1);
-            expandedKey2 = ExpandKey(key2);
+            exKey1 = ExpandKey(keyBuffer1);
+            exKey2 = ExpandKey(keyBuffer2);
 
-            for (int i = 0; i < Size; i += BLOCK_SIZE)
+            for (int i = 0; i < alignedSize; i += BLOCK_SIZE)
             {
+                // rotating key encryption
+                if (blockAccumulater % (DIFFERENTIAL * 2) == 0)
+                {
+                    // copy in first key
+                    Buffer.BlockCopy(exKey1, 0, workingKey, 0, EXPANDED_KEYBYTES);
+                    // expand seed counter to 64 bytes
+                    hashBuffer = ExpandArray(ctrBuffer);
+                    // reset the counter
+                    ctrBuffer = Extract(hashBuffer);
+                    // reset
+                    blockAccumulater = 0;
+                }
+                else if (blockAccumulater % DIFFERENTIAL == 0)
+                {
+                    // copy in second key
+                    Buffer.BlockCopy(exKey2, 0, workingKey, 0, EXPANDED_KEYBYTES);
+                    // expand seed counter to 64 bytes
+                    hashBuffer = ExpandArray(ctrBuffer);
+                    // reset the counter
+                    ctrBuffer = Extract(hashBuffer);
+                }
+
                 // increment buffer
-                Increment(seedBuffer);
+                Increment(ctrBuffer);
 
                 // xor the iv and buffer
                 for (int j = 0; j < BLOCK_SIZE; j++)
-                    iv[j] ^= seedBuffer[j];
+                    ivBuffer[j] ^= ctrBuffer[j];
 
-                // rotating key encryption
-                if (counter % 2 == 1)
-                    TransformBlock(iv, outputBlock, expandedKey1);
-                else
-                    TransformBlock(iv, outputBlock, expandedKey2);
+                // encrypt iv (aes: data, output, key)
+                Transform(ivBuffer, outputBlock, workingKey);
 
                 if (i != lastBlock)
                 {
                     // copy transform to output
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, BLOCK_SIZE);
                     // copy transform to iv
-                    Buffer.BlockCopy(outputBlock, 0, iv, 0, BLOCK_SIZE);
-                    counter++;
+                    Buffer.BlockCopy(outputBlock, 0, ivBuffer, 0, BLOCK_SIZE);
+                    // increment re-key counter
+                    blockAccumulater += BLOCK_SIZE;
                 }
                 else
                 {
                     // copy last block
-                    int finalSize = (returnSize % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (returnSize % BLOCK_SIZE);
+                    int finalSize = (Size % BLOCK_SIZE) == 0 ? BLOCK_SIZE : (Size % BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock, 0, outputData, i, finalSize);
                 }
             }
@@ -434,7 +621,7 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
-            return OutputData.Length;
+            return data.Length;
         }
 
         /// <summary>
@@ -453,7 +640,7 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
-            return OutputData.Length;
+            return data.Length / 2;
         }
 
         /// <summary>
@@ -472,7 +659,7 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length * 2);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
-            return OutputData.Length;
+            return data.Length / 2;
         }
 
         /// <summary>
@@ -491,7 +678,7 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length * 4);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
-            return OutputData.Length;
+            return data.Length / 4;
         }
 
         /// <summary>
@@ -510,7 +697,7 @@ namespace Drbg_Test
 
             byte[] data = Generate(OutputData.Length * 8);
             Buffer.BlockCopy(data, 0, OutputData, 0, data.Length);
-            return OutputData.Length;
+            return data.Length / 8;
         }
         #endregion
 
@@ -536,7 +723,7 @@ namespace Drbg_Test
 
         /// <summary>
         /// Get a 64 byte/512 bit seed, extra strength
-        /// Random feeds(4x 128) are xor'd, hashed, then stacked
+        /// Random feeds(4x 64) are xor'd, hashed, then stacked
         /// </summary>
         /// <returns>Random seed [byte[]]</returns>
         internal byte[] GetSeed64Xs()
@@ -613,6 +800,12 @@ namespace Drbg_Test
         #endregion
 
         #region Helpers
+        /// <summary>
+        /// Expand an array by bit reverse and interpolation.
+        /// Must be evenly divisible (8, 16, 32 etc).
+        /// </summary>
+        /// <param name="SubBuffer">Buffer to expand</param>
+        /// <returns></returns>
         private byte[] ExpandArray(byte[] SubBuffer)
         {
             int bufferLength = SubBuffer.Length;
@@ -633,7 +826,7 @@ namespace Drbg_Test
             Array.Reverse(tempBuffer, 0, tempBuffer.Length);
 
             // interpolate buffers
-            for (int i = 0; i < 32; i += 1)
+            for (int i = 0; i < bufferLength; i += 1)
             {
                 reverseBuffer[counter++] = SubBuffer[i];
                 reverseBuffer[counter++] = tempBuffer[i];
@@ -642,40 +835,45 @@ namespace Drbg_Test
             return reverseBuffer;
         }
 
-        private uint[] ExpandKey(byte[] Key)
+        /// <summary>
+        /// Expand an AES key
+        /// </summary>
+        /// <param name="Key">Key byte array [32 length]</param>
+        /// <returns>UInt32 array [60 length]</returns>
+        private UInt32[] ExpandKey(byte[] Key)
         {
-            // Setup Expanded Key
-            Int32 exKeySize = EXPANDED_KEYSIZE;
-            UInt32[] exKey = new UInt32[exKeySize];
+            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
             int pos = 0;
 
-            // transform bytes to UInt32
+            // shift bytes to UInt32s
             for (int i = 0; i < NK; i++)
             {
                 UInt32 value = ((UInt32)Key[pos++] << 24);
                 value |= ((UInt32)Key[pos++] << 16);
                 value |= ((UInt32)Key[pos++] << 8);
                 value |= ((UInt32)Key[pos++]);
-                exKey[i] = value;
+                expandedKey[i] = value;
             }
 
             // expand
-            for (int i = NK; i < exKeySize; i++)
+            for (int i = NK; i < EXPANDED_KEYSIZE; i++)
             {
-                UInt32 temp = exKey[i - 1];
+                UInt32 temp = expandedKey[i - 1];
                 if (i % NK == 0)
                 {
+                    // rot
                     UInt32 rot = (UInt32)((temp << 8) | ((temp >> 24) & 0xff));
+                    // sub bytes
                     temp = SubByte(rot) ^ Rcon[i / NK];
                 }
                 else if (i % NK == 4)
                 {
                     temp = SubByte(temp);
                 }
-                exKey[i] = exKey[i - NK] ^ temp;
+                expandedKey[i] = expandedKey[i - NK] ^ temp;
             }
 
-            return exKey;
+            return expandedKey;
         }
 
         /// <summary>
@@ -689,9 +887,39 @@ namespace Drbg_Test
                 return shaHash.ComputeHash(Data);
         }
 
+        /// <summary>
+        /// Extract an Int64 from a 16 byte array
+        /// </summary>
+        /// <param name="Data">Source array. Array must be 16 bytes long!</param>
+        /// <returns>Expanded Int64</returns>
+        private Int64 ExtractLong(byte[] Data)
+        {
+            byte[] data1 = new byte[8];
+            byte[] data2 = new byte[8];
+            Int64[] num = new Int64[1];
+
+            Buffer.BlockCopy(Data, 0, data1, 0, 8);
+            Buffer.BlockCopy(Data, 8, data2, 0, 8);
+
+            // xor the halves
+            for (int i = 0; i < 8; i++)
+                data1[i] ^= data2[i];
+
+            Buffer.BlockCopy(data1, 0, num, 0, 8);
+
+            return num[0];
+        }
+
+        /// <summary>
+        /// Increment a byte array by one bit
+        /// Uses carry function to rotate
+        /// </summary>
+        /// <param name="Data">Source byte array</param>
         private void Increment(byte[] Data)
         {
             int carry = 1;
+
+            // increment by one bit
             for (int i = 1; i <= Data.Length; i++)
             {
                 int res = (Data[Data.Length - i] & 0xff) + carry;
@@ -700,6 +928,9 @@ namespace Drbg_Test
             }
         }
 
+        /// <summary>
+        /// Derive sub byte
+        /// </summary>
         private UInt32 SubByte(UInt32 Rot)
         {
             UInt32 value = 0xff & Rot;
@@ -714,7 +945,13 @@ namespace Drbg_Test
         #endregion
 
         #region AES Transform
-        private void TransformBlock(byte[] InData, byte[] OutData, UInt32[] Key)
+        /// <summary>
+        /// AES transformation method
+        /// </summary>
+        /// <param name="InData">Input byte array in 16 byte blocks</param>
+        /// <param name="OutData">Encrypted byte array in 16 byte blocks</param>
+        /// <param name="Key">Expanded AES key</param>
+        private void Transform(byte[] InData, byte[] OutData, UInt32[] Key)
         {
             UInt32 a0, a1, a2, a3, b0, b1, b2, b3;
             Int32 ei = 56;
@@ -1138,6 +1375,9 @@ namespace Drbg_Test
         #endregion
 
         #region IDispose
+        /// <summary>
+        /// Dispose of this class, releasing the resources
+        /// </summary>
         public void Dispose()
         {
             Dispose(true);
