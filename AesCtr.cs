@@ -63,6 +63,8 @@ namespace Drbg_Test
         private bool _isDisposed = false;
         private int _reKeyInterval = REKEY_SIZE;
         private int _reSeedInterval = RESEED_SIZE;
+        private UInt32[] _wordBuffer = new UInt32[64];
+        private UInt32[] _hashTable = new UInt32[8];
         #endregion
 
         #region Constructor
@@ -259,7 +261,6 @@ namespace Drbg_Test
             Int32 lastBlock = alignedSize - BLOCK_SIZE;
             UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] ctrBuffer = new byte[BLOCK_SIZE];
-            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
             byte[] ivBuffer = new byte[BLOCK_SIZE];
             byte[] keyBuffer = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
@@ -315,16 +316,14 @@ namespace Drbg_Test
                             // Reset State //
                             // expand the key
                             exKey = ExpandKey(keyBuffer);
-                            // expand counter to 64 bytes for hash
-                            hashBuffer = ExpandArray(keyCounter);
                             // extract new keyCounter via sha256
-                            keyCounter = Extract(hashBuffer);
+                            keyCounter = ExtractArray32(keyCounter);
                             // get the int64 counter
                             keyIterations = ExtractLong(keyCounter);
-                            // expand seed counter to 64 bytes
-                            hashBuffer = ExpandArray(ctrBuffer);
                             // create a new seed
-                            ctrBuffer = Extract(hashBuffer);
+                            ctrBuffer = ExtractArray16(ctrBuffer);
+                            // reset the iv
+                            ivBuffer = ExtractArray16(ivBuffer);
                         }
                     }
                     keyIterations++;
@@ -426,7 +425,6 @@ namespace Drbg_Test
             Int32 keyIterations = 0;
             UInt32[] exKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] ctrBuffer = new byte[BLOCK_SIZE];
-            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
             byte[] ivBuffer = new byte[BLOCK_SIZE];
             byte[] keyBuffer = new byte[KEY_BYTES];
             byte[] keyCounter = new byte[KEY_BYTES];
@@ -481,14 +479,12 @@ namespace Drbg_Test
                             // Reset State //
                             // expand the key
                             exKey = ExpandKey(keyBuffer);
-                            // expand counter to 64 bytes for hash
-                            hashBuffer = ExpandArray(keyCounter);
                             // extract new keyCounter via sha256
-                            keyCounter = Extract(hashBuffer);
-                            // expand seed counter to 64 bytes
-                            hashBuffer = ExpandArray(ctrBuffer);
+                            keyCounter = ExtractArray32(keyCounter);
                             // reset the counter
-                            ctrBuffer = Extract(hashBuffer);
+                            ctrBuffer = ExtractArray16(ctrBuffer);
+                            // reset the iv
+                            ivBuffer = ExtractArray16(ivBuffer);
                         }
                     }
                     keyIterations++;
@@ -527,7 +523,6 @@ namespace Drbg_Test
             UInt32[] exKey2 = new UInt32[EXPANDED_KEYSIZE];
             UInt32[] workingKey = new UInt32[EXPANDED_KEYSIZE];
             byte[] ctrBuffer = new byte[BLOCK_SIZE];
-            byte[] hashBuffer = new byte[HASH_BUFFERSIZE];
             byte[] ivBuffer = new byte[BLOCK_SIZE];
             byte[] keyBuffer1 = new byte[KEY_BYTES];
             byte[] keyBuffer2 = new byte[KEY_BYTES];
@@ -557,10 +552,11 @@ namespace Drbg_Test
                 {
                     // copy in first key
                     Buffer.BlockCopy(exKey1, 0, workingKey, 0, EXPANDED_KEYBYTES);
-                    // expand seed counter to 64 bytes
-                    hashBuffer = ExpandArray(ctrBuffer);
-                    // reset the counter
-                    ctrBuffer = Extract(hashBuffer);
+                    // Reset State //
+                    // expand seed counter to 64 bytes and extract
+                    ctrBuffer = ExtractArray16(ctrBuffer);
+                    // expand iv to 64 bytes
+                    ivBuffer = ExtractArray16(ivBuffer);
                     // reset
                     blockAccumulater = 0;
                 }
@@ -568,10 +564,11 @@ namespace Drbg_Test
                 {
                     // copy in second key
                     Buffer.BlockCopy(exKey2, 0, workingKey, 0, EXPANDED_KEYBYTES);
-                    // expand seed counter to 64 bytes
-                    hashBuffer = ExpandArray(ctrBuffer);
-                    // reset the counter
-                    ctrBuffer = Extract(hashBuffer);
+                    // Reset State //
+                    // expand seed counter to 64 bytes and extract
+                    ctrBuffer = ExtractArray16(ctrBuffer);
+                    // expand iv to 64 bytes
+                    ivBuffer = ExtractArray16(ivBuffer);
                 }
 
                 // increment buffer
@@ -773,8 +770,8 @@ namespace Drbg_Test
         /// <returns>Random seed [byte[]]</returns>
         internal static byte[] GetSeed32Xs()
         {
-            byte[] data1 = new byte[128];
-            byte[] data2 = new byte[128];
+            byte[] data1 = new byte[64];
+            byte[] data2 = new byte[64];
 
             using (RNGCryptoServiceProvider rngRandom = new RNGCryptoServiceProvider())
             {
@@ -801,82 +798,6 @@ namespace Drbg_Test
 
         #region Helpers
         /// <summary>
-        /// Expand an array by bit reverse and interpolation.
-        /// Must be evenly divisible (8, 16, 32 etc).
-        /// </summary>
-        /// <param name="SubBuffer">Buffer to expand</param>
-        /// <returns></returns>
-        private byte[] ExpandArray(byte[] SubBuffer)
-        {
-            int bufferLength = SubBuffer.Length;
-            int counter = 0;
-            int numLength = bufferLength / 4;
-            byte[] reverseBuffer = new byte[bufferLength * 2];
-            byte[] tempBuffer = new byte[bufferLength];
-            int[] numBuffer = new int[numLength];
-
-            // copy to int array
-            Buffer.BlockCopy(SubBuffer, 0, numBuffer, 0, SubBuffer.Length);
-            // reverse the bits
-            for (int i = 0; i < numLength; i++)
-                numBuffer[i] = ~numBuffer[i];
-            // copy to byte buffer
-            Buffer.BlockCopy(numBuffer, 0, tempBuffer, 0, tempBuffer.Length);
-            // reverse the array
-            Array.Reverse(tempBuffer, 0, tempBuffer.Length);
-
-            // interpolate buffers
-            for (int i = 0; i < bufferLength; i += 1)
-            {
-                reverseBuffer[counter++] = SubBuffer[i];
-                reverseBuffer[counter++] = tempBuffer[i];
-            }
-
-            return reverseBuffer;
-        }
-
-        /// <summary>
-        /// Expand an AES key
-        /// </summary>
-        /// <param name="Key">Key byte array [32 length]</param>
-        /// <returns>UInt32 array [60 length]</returns>
-        private UInt32[] ExpandKey(byte[] Key)
-        {
-            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
-            int pos = 0;
-
-            // shift bytes to UInt32s
-            for (int i = 0; i < NK; i++)
-            {
-                UInt32 value = ((UInt32)Key[pos++] << 24);
-                value |= ((UInt32)Key[pos++] << 16);
-                value |= ((UInt32)Key[pos++] << 8);
-                value |= ((UInt32)Key[pos++]);
-                expandedKey[i] = value;
-            }
-
-            // expand
-            for (int i = NK; i < EXPANDED_KEYSIZE; i++)
-            {
-                UInt32 temp = expandedKey[i - 1];
-                if (i % NK == 0)
-                {
-                    // rot
-                    UInt32 rot = (UInt32)((temp << 8) | ((temp >> 24) & 0xff));
-                    // sub bytes
-                    temp = SubByte(rot) ^ Rcon[i / NK];
-                }
-                else if (i % NK == 4)
-                {
-                    temp = SubByte(temp);
-                }
-                expandedKey[i] = expandedKey[i - NK] ^ temp;
-            }
-
-            return expandedKey;
-        }
-
-        /// <summary>
         /// Entropy extractor via SHA256
         /// </summary>
         /// <param name="Data">Seed bytes</param>
@@ -885,6 +806,70 @@ namespace Drbg_Test
         {
             using (SHA256 shaHash = SHA256Managed.Create())
                 return shaHash.ComputeHash(Data);
+        }
+
+        /// <summary>
+        /// Extract 16 bytes of random from a 16 byte buffer 
+        /// </summary>
+        /// <param name="SubBuffer">16 byte buffer</param>
+        /// <returns>Random array of 16 bytes</returns>
+        private byte[] ExtractArray16(byte[] SubBuffer)
+        {
+            Int32[] tmpNum = new Int32[4];
+            Int32[,] arrNum = new Int32[4, 4];
+            byte[] data = new byte[64];
+            byte[] hash = new byte[SubBuffer.Length];
+
+            // copy first array in
+            Buffer.BlockCopy(SubBuffer, 0, tmpNum, 0, 16);
+
+            // randomize the bits
+            for (int i = 0; i < 4; i++)
+            {
+                arrNum[0, i] = (tmpNum[i] << 2);
+                arrNum[1, i] = (tmpNum[i] >> 1);
+                arrNum[2, i] = (tmpNum[i] >> 4);
+                arrNum[3, i] = (tmpNum[i] << 5);
+            }
+
+            // copy it to data
+            Buffer.BlockCopy(arrNum, 0, data, 0, 64);
+
+            // get the hash
+            data = ComputeHash64(data);
+            // split the hash
+            Buffer.BlockCopy(data, 0, hash, 0, 16);
+
+            return hash;
+        }
+
+        /// <summary>
+        /// Expand an array by bit reversal and interpolation.
+        /// Must be evenly divisible (8, 16, 32 etc).
+        /// </summary>
+        /// <param name="SubBuffer">Buffer to expand</param>
+        /// <returns></returns>
+        private byte[] ExtractArray32(byte[] SubBuffer)
+        {
+            Int32[] tmpNum = new Int32[8];
+            Int32[,] arrNum = new Int32[2, 8];
+            byte[] data = new byte[64];
+
+            // copy first array in
+            Buffer.BlockCopy(SubBuffer, 0, tmpNum, 0, 32);
+
+            // randomize the bits
+            for (int i = 0; i < 8; i++)
+            {
+                arrNum[0, i] = (tmpNum[i] << 3);
+                arrNum[1, i] = (tmpNum[i] >> 2);
+            }
+
+            // copy it to data
+            Buffer.BlockCopy(arrNum, 0, data, 0, 64);
+
+            // get the hash
+            return ComputeHash64(data);
         }
 
         /// <summary>
@@ -927,6 +912,49 @@ namespace Drbg_Test
                 Data[Data.Length - i] = (byte)res;
             }
         }
+        #endregion
+
+        #region AES
+        /// <summary>
+        /// Expand an AES key
+        /// </summary>
+        /// <param name="Key">Key byte array [32 length]</param>
+        /// <returns>UInt32 array [60 length]</returns>
+        private UInt32[] ExpandKey(byte[] Key)
+        {
+            UInt32[] expandedKey = new UInt32[EXPANDED_KEYSIZE];
+            int pos = 0;
+
+            // shift bytes to UInt32s
+            for (int i = 0; i < NK; i++)
+            {
+                UInt32 value = ((UInt32)Key[pos++] << 24);
+                value |= ((UInt32)Key[pos++] << 16);
+                value |= ((UInt32)Key[pos++] << 8);
+                value |= ((UInt32)Key[pos++]);
+                expandedKey[i] = value;
+            }
+
+            // expand
+            for (int i = NK; i < EXPANDED_KEYSIZE; i++)
+            {
+                UInt32 temp = expandedKey[i - 1];
+                if (i % NK == 0)
+                {
+                    // rot
+                    UInt32 rot = (UInt32)((temp << 8) | ((temp >> 24) & 0xff));
+                    // sub bytes
+                    temp = SubByte(rot) ^ Rcon[i / NK];
+                }
+                else if (i % NK == 4)
+                {
+                    temp = SubByte(temp);
+                }
+                expandedKey[i] = expandedKey[i - NK] ^ temp;
+            }
+
+            return expandedKey;
+        }
 
         /// <summary>
         /// Derive sub byte
@@ -942,9 +970,7 @@ namespace Drbg_Test
             value = 0xff & (Rot >> 24);
             return result | (UInt32)(SBox[value] << 24);
         }
-        #endregion
 
-        #region AES Transform
         /// <summary>
         /// AES transformation method
         /// </summary>
@@ -1045,7 +1071,6 @@ namespace Drbg_Test
             OutData[14] = (byte)(SBox[(byte)(b1 >> 8)] ^ (byte)(Key[ei] >> 8));
             OutData[15] = (byte)(SBox[(byte)b2] ^ (byte)Key[ei++]);
         }
-        #endregion
 
         #region Constant Tables
         private readonly UInt32[] Rcon = new UInt32[] {
@@ -1373,6 +1398,180 @@ namespace Drbg_Test
 			0xa8017139, 0x0cb3de08, 0xb4e49cd8, 0x56c19064, 0xcb84617b, 0x32b670d5, 0x6c5c7448, 0xb85742d0,
 		};
         #endregion
+        #endregion
+
+        #region SHA256
+        internal byte[] ComputeHash64(byte[] Input)
+        {
+            if (Input.Length != 64)
+                throw new ArgumentOutOfRangeException("SHA block size must be 64 bytes!");
+
+            _hashTable = new UInt32[8] { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
+
+            UpdateBlock(Input);
+
+            ProcessBlock();
+
+            return DoFinal();
+        }
+
+        private byte[] DoFinal()
+        {
+            byte[] hash = new byte[32];
+
+            // always 64 based, no offset
+            _wordBuffer[0] = 2147483648;
+            _wordBuffer[14] = 0;
+            _wordBuffer[15] = 512;
+
+            ProcessBlock();
+
+            UInt32ToBE((uint)_hashTable[0], hash, 0);
+            UInt32ToBE((uint)_hashTable[1], hash, 4);
+            UInt32ToBE((uint)_hashTable[2], hash, 8);
+            UInt32ToBE((uint)_hashTable[3], hash, 12);
+            UInt32ToBE((uint)_hashTable[4], hash, 16);
+            UInt32ToBE((uint)_hashTable[5], hash, 20);
+            UInt32ToBE((uint)_hashTable[6], hash, 24);
+            UInt32ToBE((uint)_hashTable[7], hash, 28);
+
+            Array.Clear(_wordBuffer, 0, _wordBuffer.Length);
+
+            return hash;
+        }
+
+        private void ProcessBlock()
+        {
+            Int32 ct = 0;
+            UInt32[] workingSet = new UInt32[8];
+
+            // copy the hashtable in
+            Buffer.BlockCopy(_hashTable, 0, workingSet, 0, 32);
+
+            // expand 16 word block into 64 word blocks
+            for (int ti = 16; ti <= 63; ti++)
+                _wordBuffer[ti] = Theta1(_wordBuffer[ti - 2]) + _wordBuffer[ti - 7] + Theta0(_wordBuffer[ti - 15]) + _wordBuffer[ti - 16];
+
+            for (int i = 0; i < 8; ++i)
+            {
+                // t = 8 * i
+                workingSet[7] += Sum1Ch(workingSet[4], workingSet[5], workingSet[6]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[3] += workingSet[7];
+                workingSet[7] += Sum0Maj(workingSet[0], workingSet[1], workingSet[2]);
+                ++ct;
+                // t = 8 * i + 1
+                workingSet[6] += Sum1Ch(workingSet[3], workingSet[4], workingSet[5]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[2] += workingSet[6];
+                workingSet[6] += Sum0Maj(workingSet[7], workingSet[0], workingSet[1]);
+                ++ct;
+                // t = 8 * i + 2
+                workingSet[5] += Sum1Ch(workingSet[2], workingSet[3], workingSet[4]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[1] += workingSet[5];
+                workingSet[5] += Sum0Maj(workingSet[6], workingSet[7], workingSet[0]);
+                ++ct;
+                // t = 8 * i + 3
+                workingSet[4] += Sum1Ch(workingSet[1], workingSet[2], workingSet[3]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[0] += workingSet[4];
+                workingSet[4] += Sum0Maj(workingSet[5], workingSet[6], workingSet[7]);
+                ++ct;
+                // t = 8 * i + 4
+                workingSet[3] += Sum1Ch(workingSet[0], workingSet[1], workingSet[2]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[7] += workingSet[3];
+                workingSet[3] += Sum0Maj(workingSet[4], workingSet[5], workingSet[6]);
+                ++ct;
+                // t = 8 * i + 5
+                workingSet[2] += Sum1Ch(workingSet[7], workingSet[0], workingSet[1]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[6] += workingSet[2];
+                workingSet[2] += Sum0Maj(workingSet[3], workingSet[4], workingSet[5]);
+                ++ct;
+                // t = 8 * i + 6
+                workingSet[1] += Sum1Ch(workingSet[6], workingSet[7], workingSet[0]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[5] += workingSet[1];
+                workingSet[1] += Sum0Maj(workingSet[2], workingSet[3], workingSet[4]);
+                ++ct;
+                // t = 8 * i + 7
+                workingSet[0] += Sum1Ch(workingSet[5], workingSet[6], workingSet[7]) + K1C[ct] + _wordBuffer[ct];
+                workingSet[4] += workingSet[0];
+                workingSet[0] += Sum0Maj(workingSet[1], workingSet[2], workingSet[3]);
+                ++ct;
+            }
+
+            _hashTable[0] += workingSet[0];
+            _hashTable[1] += workingSet[1];
+            _hashTable[2] += workingSet[2];
+            _hashTable[3] += workingSet[3];
+            _hashTable[4] += workingSet[4];
+            _hashTable[5] += workingSet[5];
+            _hashTable[6] += workingSet[6];
+            _hashTable[7] += workingSet[7];
+
+            Array.Clear(_wordBuffer, 0, 16);
+        }
+
+        private void UpdateBlock(byte[] Input)
+        {
+            int ct = 0;
+
+            // convert to words
+            for (int i = 0; i < 64; i += 4)
+                _wordBuffer[ct++] = BEToUInt32(Input, i);
+        }
+
+        #region Helpers
+        private uint BEToUInt32(byte[] bs, int off)
+        {
+            uint n = (uint)bs[off] << 24;
+            n |= (uint)bs[++off] << 16;
+            n |= (uint)bs[++off] << 8;
+            n |= (uint)bs[++off];
+            return n;
+        }
+
+        private void UInt32ToBE(uint n, byte[] bs, int off)
+        {
+            bs[off] = (byte)(n >> 24);
+            bs[++off] = (byte)(n >> 16);
+            bs[++off] = (byte)(n >> 8);
+            bs[++off] = (byte)(n);
+        }
+
+        private uint Sum1Ch(uint x, uint y, uint z)
+        {
+            return (((x >> 6) | (x << 26)) ^ ((x >> 11) | (x << 21)) ^ ((x >> 25) | (x << 7))) + ((x & y) ^ ((~x) & z));
+        }
+
+        private uint Sum0Maj(uint x, uint y, uint z)
+        {
+            return (((x >> 2) | (x << 30)) ^ ((x >> 13) | (x << 19)) ^ ((x >> 22) | (x << 10))) + ((x & y) ^ (x & z) ^ (y & z));
+        }
+
+        private uint Theta0(uint x)
+        {
+            return ((x >> 7) | (x << 25)) ^ ((x >> 18) | (x << 14)) ^ (x >> 3);
+        }
+
+        private uint Theta1(uint x)
+        {
+            return ((x >> 17) | (x << 15)) ^ ((x >> 19) | (x << 13)) ^ (x >> 10);
+        }
+        #endregion
+
+        #region Constant Table
+        /// <summary>
+        /// the first 32 bits of the fractional parts of the cube roots of the first sixty-four prime numbers)
+        /// </summary>
+        private readonly uint[] K1C = { 
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+        };
+        #endregion
+        #endregion
 
         #region IDispose
         /// <summary>
@@ -1395,7 +1594,7 @@ namespace Drbg_Test
             {
                 if (Disposing)
                 {
-                    // clear the boxes
+                    // clear the AES boxes
                     if (Rcon != null)
                         Array.Clear(Rcon, 0, Rcon.Length);
                     if (SBox != null)
@@ -1418,6 +1617,13 @@ namespace Drbg_Test
                         Array.Clear(iT2, 0, iT2.Length);
                     if (iT3 != null)
                         Array.Clear(iT3, 0, iT3.Length);
+                    // clean up SHA256
+                    if (_hashTable != null)
+                        Array.Clear(_hashTable, 0, _hashTable.Length);
+                    if (_wordBuffer != null)
+                        Array.Clear(_wordBuffer, 0, _wordBuffer.Length);
+                    if (K1C != null)
+                        Array.Clear(K1C, 0, K1C.Length);
                 }
                 _isDisposed = true;
             }
