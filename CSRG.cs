@@ -1,9 +1,13 @@
 ﻿using System;
 
-/// An AES-CTR-DRBG implementation..
+/// An AES-CTR-DRBG implementation.
 /// 
 /// Chaotic State Random Generator, CSRG (nick. Chaos), v1.0, July 14, 2014
-/// Updated July 20, 2014
+/// 
+/// Updated July 24, 2014
+/// Added EntopyPool routine, expansion table now rotates at about 4k intervals
+/// Increased seed size to 96 bytes
+/// 
 /// Authored by: John Underhill, steppenwolfe_2000@yahoo.com
 /// AES routines based on several implementations including Mono: https://github.com/mono, and BouncyCastle: http://bouncycastle.org/
 /// Many thanks to the authors of those great projects, and the authors of the original Novell implementation.. j.u.
@@ -12,7 +16,7 @@
 /// 
 /// Licence is free for all use, provided the user accepts that the author, (John Underhill), offers absolutely no support for this software, 
 /// makes no claim of fitness or merchantability, and all and any responsibility of any kind, known or unknown is entirely the responsibility of the user or distributer of this code 
-/// or any derivations thereof. I further disavow any and all liability or responsibility in its use, now and for all time.
+/// or any derivations thereof. I further disavow all liability or responsibility in its use, now and for all time.
 /// 
 /// This header must remain in any distributions of this class.
 
@@ -28,7 +32,7 @@ namespace Drbg_Test
         D512,
     }
 
-    public enum EngineModes
+    public enum Engines
     {
         DUAL,
         SINGLE,
@@ -49,7 +53,10 @@ namespace Drbg_Test
         private const Int32 DIFFERENTIAL_DEFAULT = 256;
         private const Int32 DIFFERENTIAL_MINSIZE = 64;
         private const Int32 DIFFERENTIAL_MAXSIZE = 102400;
-        private const Int32 SEED_BYTES = 64;
+        private const Int32 SEED_BYTES = 96;
+        private const Int32 TABLE_BYTES = 48;
+        // entropy pool rotation supressor
+        private const Int32 SUPPRESSOR = 32;
         // default expansion seed
         private byte[] SEED_TABLE = new byte[48] {
             0x2A, 0x2B, 0x3C, 0x38, 0xDC, 0xA9, 0xC2, 0x7A, 
@@ -63,12 +70,14 @@ namespace Drbg_Test
 
         #region Fields
         private bool _isDisposed = false;
+        private Int32 _entropyCount = 0;
         private UInt32[] _expansionTable = new UInt32[1024];
         private UInt32[] _hashTable = new UInt32[8];
+        private byte[] _tableEntropy = new byte[128];
         private UInt32[] _wordBuffer = new UInt32[64];
-        private UInt32 DIFFERENTIAL = 256;
+        private UInt32 _differential = 256;
         private Differentials _stateDifferential = Differentials.D256;
-        private EngineModes _engineMode = EngineModes.DUAL;
+        private Engines _engine = Engines.DUAL;
         #endregion
 
         #region Constructor
@@ -88,7 +97,7 @@ namespace Drbg_Test
         public CSRG(byte[] TableSeed)
         {
             // wrong seed size!
-            if (TableSeed.Length != 48)
+            if (TableSeed.Length != TABLE_BYTES)
                 throw new ArgumentOutOfRangeException("Expansion Seed size must be 48 bytes long!");
 
             _expansionTable = ExpandTable(TableSeed);
@@ -97,15 +106,15 @@ namespace Drbg_Test
 
         #region Properties
         /// <summary>
-        /// Select the engine type: Dual or Single AES CTRs.
+        /// Select the engine type: Dual or Single AES CTRs
         /// </summary>
-        public EngineModes Engine
+        public Engines Engine
         {
-            get { return _engineMode; }
-            set { _engineMode = value; }
+            get { return _engine; }
+            set { _engine = value; }
         }
         /// <summary>
-        /// Maximum output from a single seed in bytes.
+        /// Maximum output from a single seed in bytes
         /// </summary>
         public int OutputMaximum
         {
@@ -113,7 +122,7 @@ namespace Drbg_Test
         }
 
         /// <summary>
-        /// Required Seed buffer size.
+        /// Required Seed buffer size
         /// </summary>
         public int SeedSize
         {
@@ -129,15 +138,15 @@ namespace Drbg_Test
             set
             {
                 if (value == Differentials.D32)
-                    DIFFERENTIAL = 32;
+                    _differential = 32;
                 else if (value == Differentials.D64)
-                    DIFFERENTIAL = 64;
+                    _differential = 64;
                 else if (value == Differentials.D128)
-                    DIFFERENTIAL = 128;
+                    _differential = 128;
                 else if (value == Differentials.D256)
-                    DIFFERENTIAL = 256;
+                    _differential = 256;
                 else if (value == Differentials.D512)
-                    DIFFERENTIAL = 512;
+                    _differential = 512;
                 _stateDifferential = value;
             }
         }
@@ -150,12 +159,12 @@ namespace Drbg_Test
         /// Uses a dual/single CTR xor with independant random state resets.
         /// Use the Engine property to toggle modes.
         /// </summary>
-        /// <param name="Size">Size of data return in bytes.</param>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <param name="Size">Size of data return in bytes. [recommended min. 102400 max. 10240000]</param>
+        /// <param name="Seed">Random seed, Fixed size 96 bytes</param>
         /// <returns>Random data [byte[]]</returns>
         public byte[] Generate(Int32 Size, byte[] Seed)
         {
-            if (this.Engine == EngineModes.DUAL)
+            if (this.Engine == Engines.DUAL)
                 return GenerateT2(Size, Seed);
             else
                 return GenerateT1(Size, Seed);
@@ -167,13 +176,13 @@ namespace Drbg_Test
         /// Uses a dual/single CTR xor with independant random state resets.
         /// Use the Engine property to toggle modes.
         /// </summary>
-        /// <param name="Size">Size of data return in bytes.</param>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
-        /// <param name="Engine">The AES engine type, single CTR, or Dual xored CTRs.</param>
+        /// <param name="Size">Size of data return in bytes. [recommended min. 102400 max. 10240000].</param>
+        /// <param name="Seed">Random seed, Fixed size 96 bytes</param>
+        /// <param name="Engine">The AES engine type, single CTR, or Dual xored CTRs</param>
         /// <returns>Random data [byte[]]</returns>
-        public byte[] Generate(Int32 Size, byte[] Seed, EngineModes Engine)
+        public byte[] Generate(Int32 Size, byte[] Seed, Engines Engine)
         {
-            if (Engine == EngineModes.DUAL)
+            if (Engine == Engines.DUAL)
                 return GenerateT2(Size, Seed);
             else
                 return GenerateT1(Size, Seed);
@@ -185,16 +194,16 @@ namespace Drbg_Test
         /// Uses a dual/single CTR xor with independant random state resets.
         /// Use the Engine property to toggle modes.
         /// </summary>
-        /// <param name="Size">Size of data return in bytes.</param>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
-        /// <param name="Engine">The AES engine type, single CTR, or Dual xored CTRs.</param>
-        /// <param name="Differential">The reseed modulus differential. Smaller values mean more reseeds (slower).</param>
+        /// <param name="Size">Size of data return in bytes. [recommended min. 102400 max. 10240000].</param>
+        /// <param name="Seed">Random seed, Fixed size 96 bytes.</param>
+        /// <param name="Engine">The AES engine type, single CTR, or Dual xored CTRs</param>
+        /// <param name="Differential">The reseed modulus differential. Smaller values mean more reseeds (slower)</param>
         /// <returns>Random data [byte[]]</returns>
-        public byte[] Generate(Int32 Size, byte[] Seed, EngineModes Engine, Differentials Differential)
+        public byte[] Generate(Int32 Size, byte[] Seed, Engines Engine, Differentials Differential)
         {
             this.StateDifferential = Differential;
 
-            if (Engine == EngineModes.DUAL)
+            if (Engine == Engines.DUAL)
                 return GenerateT2(Size, Seed);
             else
                 return GenerateT1(Size, Seed);
@@ -205,8 +214,8 @@ namespace Drbg_Test
         /// Generate a block of random bytes using dual AES CTR mode.
         /// Uses a dual CTR xor with a chaotic state change machine.
         /// </summary>
-        /// <param name="Size">Size of data return in bytes.</param>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <param name="Size">Size of data return in bytes</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 96 bytes long</param>
         /// <returns>Random data [byte[]]</returns>
         private byte[] GenerateT2(Int32 Size, byte[] Seed)
         {
@@ -215,9 +224,10 @@ namespace Drbg_Test
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is "
                     + ENGINE_MAXPULL.ToString() + " bytes.");
             // wrong seed size!
-            if (Seed.Length != 64)
-                throw new ArgumentOutOfRangeException("Seed length must be 64 bytes long!");
+            if (Seed.Length != SEED_BYTES)
+                throw new ArgumentOutOfRangeException("Seed length must be " + SEED_BYTES.ToString() + " bytes long!");
 
+            UInt16 poolSize = 0;
             // align to upper divisible of block size
             Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             Int32 lastBlock = alignedSize - BLOCK_SIZE;
@@ -229,27 +239,24 @@ namespace Drbg_Test
             byte[] ctrBuffer2 = new byte[BLOCK_SIZE];
             byte[] keyBuffer1 = new byte[KEY_BYTES];
             byte[] keyBuffer2 = new byte[KEY_BYTES];
-            byte[] seedBuffer = new byte[KEY_BYTES];
             byte[] outputBlock1 = new byte[BLOCK_SIZE];
             byte[] outputBlock2 = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[Size];
+            byte[] seedBuffer = new byte[KEY_BYTES];
 
-            // copy the seed to key1, key2
+            // copy seed to key1, key2
             Buffer.BlockCopy(Seed, 0, keyBuffer1, 0, KEY_BYTES);
             Buffer.BlockCopy(Seed, KEY_BYTES, keyBuffer2, 0, KEY_BYTES);
+
+            // copy seed to counter 1
+            Buffer.BlockCopy(Seed, KEY_BYTES * 2, ctrBuffer1, 0, BLOCK_SIZE);
+            // copy remainder to counter 2
+            Buffer.BlockCopy(Seed, (KEY_BYTES * 2) + BLOCK_SIZE, ctrBuffer2, 0, BLOCK_SIZE);
 
             // expand AES key1
             exKey1 = ExpandKey(keyBuffer1);
             // expand AES key2
             exKey2 = ExpandKey(keyBuffer2);
-
-            // copy counter seed 1
-            Buffer.BlockCopy(keyBuffer1, BLOCK_SIZE, ctrBuffer1, 0, BLOCK_SIZE);
-            // copy counter seed 2
-            Buffer.BlockCopy(keyBuffer2, BLOCK_SIZE, ctrBuffer2, 0, BLOCK_SIZE);
-            // extract them
-            ctrBuffer1 = ExtractArray16(ctrBuffer2);
-            ctrBuffer2 = ExtractArray16(ctrBuffer1);
 
             // extract the state reset counters
             reSeedCounter1 = ExtractULong(ctrBuffer1);
@@ -269,9 +276,9 @@ namespace Drbg_Test
                 Transform(ctrBuffer2, outputBlock2, exKey2);
 
                 // independant random rekey mechanism for transforms 1 and 2
-                if (reSeedCounter1 % DIFFERENTIAL == 0)
+                if (reSeedCounter1 % _differential == 0)
                 {
-                    // Reset State 1 //seedBuffer
+                    // Reset State 1 //
                     // copy the 2 transforms to the new seed
                     Buffer.BlockCopy(outputBlock2, 0, seedBuffer, 0, BLOCK_SIZE);
                     Buffer.BlockCopy(outputBlock1, 0, seedBuffer, BLOCK_SIZE, BLOCK_SIZE);
@@ -285,7 +292,7 @@ namespace Drbg_Test
                     reSeedCounter1 = ExtractULong(ctrBuffer1);
                 }
                 // re-state when remainder of modulo with counter is 0
-                if (reSeedCounter2 % DIFFERENTIAL == 0)
+                if (reSeedCounter2 % _differential == 0)
                 {
                     // Reset State 2 //
                     // copy the 2 transforms to the new seed
@@ -299,6 +306,35 @@ namespace Drbg_Test
                     ctrBuffer2 = ExtractArray16(outputBlock1);
                     // get the int64 reseed counter
                     reSeedCounter2 = ExtractULong(ctrBuffer2);
+                }
+
+                // Entropy collector //
+                // number of bytes to pass to entropy collector
+                // determined by last 4 bits of output block 2
+                if (reSeedCounter1 % SUPPRESSOR == 0)
+                {
+                    // get the size
+                    poolSize = ExtractShort(outputBlock2, 4);
+                    if (poolSize > 0)
+                    {
+                        // copy to array
+                        byte[] pool = new byte[poolSize];
+                        Buffer.BlockCopy(outputBlock1, 0, pool, 0, poolSize);
+                        // send the bytes to the entropy pool
+                        EntropyPool(pool);
+                    }
+                }
+                // collect from second block
+                if (reSeedCounter2 % SUPPRESSOR == 0)
+                {
+                    poolSize = ExtractShort(outputBlock1, 4);
+                    if (poolSize > 0)
+                    {
+                        byte[] pool = new byte[poolSize];
+                        Buffer.BlockCopy(outputBlock2, 0, pool, 0, poolSize);
+                        // send the bytes to the entropy pool
+                        EntropyPool(pool);
+                    }
                 }
 
                 // xor the two transforms
@@ -330,7 +366,7 @@ namespace Drbg_Test
         /// Uses an AES transform in CTR mode, with a chaotic state change machine.
         /// </summary>
         /// <param name="Size">Size of data return in bytes.</param>
-        /// <param name="Seed">Random seed, Fixed size: must be 64 bytes long</param>
+        /// <param name="Seed">Random seed, Fixed size: must be 96 bytes long</param>
         /// <returns>Random data [byte[]]</returns>
         private byte[] GenerateT1(Int32 Size, byte[] Seed)
         {
@@ -339,9 +375,10 @@ namespace Drbg_Test
                 throw new ArgumentOutOfRangeException("The size requested is too large! Maximum is "
                     + ENGINE_MAXPULL.ToString() + " bytes.");
             // wrong seed size!
-            if (Seed.Length != 64)
-                throw new ArgumentOutOfRangeException("Seed length must be 64 bytes long!");
+            if (Seed.Length != SEED_BYTES)
+                throw new ArgumentOutOfRangeException("Seed length must be " + SEED_BYTES.ToString() + " bytes long!");
 
+            UInt16 poolSize = 0;
             // align to upper divisible of block size
             Int32 alignedSize = (Size % BLOCK_SIZE == 0 ? Size : Size + BLOCK_SIZE - (Size % BLOCK_SIZE));
             Int32 lastBlock = alignedSize - BLOCK_SIZE;
@@ -349,15 +386,19 @@ namespace Drbg_Test
             UInt32[] exKey;
             byte[] ctrBuffer = new byte[BLOCK_SIZE];
             byte[] keyBuffer = new byte[KEY_BYTES];
-            byte[] seedBuffer = new byte[BLOCK_SIZE];
             byte[] outputBlock = new byte[BLOCK_SIZE];
             byte[] outputData = new byte[Size];
+            byte[] seedBuffer = new byte[BLOCK_SIZE]; 
+            byte[] tempPool = new byte[KEY_BYTES];
 
             // copy the seed to key, counter, and seedcounter
             Buffer.BlockCopy(Seed, 0, keyBuffer, 0, KEY_BYTES);
             Buffer.BlockCopy(Seed, KEY_BYTES, ctrBuffer, 0, BLOCK_SIZE);
             Buffer.BlockCopy(Seed, KEY_BYTES + BLOCK_SIZE, seedBuffer, 0, BLOCK_SIZE);
+            Buffer.BlockCopy(Seed, KEY_BYTES * 2, tempPool, 0, BLOCK_SIZE);
 
+            // throw the 32 bytes remaining to entropy pool
+            EntropyPool(tempPool);
             // get reseed counter
             reSeedCounter = ExtractULong(seedBuffer);
             // expand AES key
@@ -371,7 +412,7 @@ namespace Drbg_Test
                 Transform(ctrBuffer, outputBlock, exKey);
 
                 // rekey mechanism for transforms 1
-                if (reSeedCounter % DIFFERENTIAL == 0)
+                if (reSeedCounter % _differential == 0)
                 {
                     // Reset State //
                     // create new key via sha256
@@ -383,6 +424,23 @@ namespace Drbg_Test
                     // get the int64 reseed counter
                     reSeedCounter = ExtractULong(ctrBuffer);
                 }
+
+                if (reSeedCounter % SUPPRESSOR == 0)
+                {
+                    // Entropy collector //
+                    // number of bytes to pass to entropy collector
+                    // determined by last 4 bits of output block
+                    poolSize = ExtractShort(outputBlock, 4);
+                    if (poolSize > 0)
+                    {
+                        byte[] pool = new byte[poolSize];
+                        // copy the bytes
+                        Buffer.BlockCopy(outputBlock, 0, pool, 0, poolSize);
+                        // send the bytes to the entropy pool
+                        EntropyPool(pool);
+                    }
+                }
+
                 // copy to output
                 if (i != lastBlock)
                 {
@@ -475,6 +533,19 @@ namespace Drbg_Test
 
             // get the hash
             return ComputeHash64(data);
+        }
+
+        /// <summary>
+        /// Returns a value as a byte portion of a byte array
+        /// </summary>
+        /// <param name="Data">A byte array, at leat 2 bytes</param>
+        /// <param name="BitLength">Number of bits to use</param>
+        /// <returns>Adjusted value</returns>
+        private UInt16 ExtractShort(byte[] Data, UInt16 BitLength)
+        {
+            UInt16[] newValue = new UInt16[1];
+            Buffer.BlockCopy(Data, 0, newValue, 0, 2);
+            return (UInt16)(newValue[0] >> (16 - BitLength));
         }
 
         /// <summary>
@@ -1193,6 +1264,49 @@ namespace Drbg_Test
         #endregion
 
         #region Helpers
+        /// <summary>
+        /// Collects entropy for the expansion table rotation
+        /// </summary>
+        /// <param name="Data">byte array, length 1-128</param>
+        private void EntropyPool(byte[] Data)
+        {
+            int count = Data.Length;
+
+            // to max 128 bytes
+            if (count + _entropyCount > 128)
+                count = 128 % _entropyCount;
+
+            // copy it in
+            Buffer.BlockCopy(Data, 0, _tableEntropy, _entropyCount, count);
+            // update the counter
+            _entropyCount += count;
+
+            // triggers expansion table rotation
+            if (_entropyCount == 128)
+            {
+                byte[] data = new byte[64];
+                byte[] tableSeed = new byte[48];
+
+                // copy the poll to 64 byte buffer
+                Buffer.BlockCopy(_tableEntropy, 0, data, 0, 64);
+                // get hash from sha256
+                byte[] entropy = ComputeHash64(data);
+                // copy to the tables seed
+                Buffer.BlockCopy(entropy, 0, tableSeed, 0, 32);
+
+                // do the same for the next 64 bytes
+                Buffer.BlockCopy(_tableEntropy, 64, data, 0, 64);
+                entropy = ComputeHash64(data);
+                // copy to table seed
+                Buffer.BlockCopy(entropy, 0, tableSeed, 32, 16);
+
+                // create a new expansion table
+                _expansionTable = ExpandTable(tableSeed);
+                // reset the timer
+                _entropyCount = 0;
+            }
+        }
+
         /// <summary>
         /// Transform a seed into a 1024 UInt32 array of random.
         /// </summary>
